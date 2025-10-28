@@ -1,86 +1,100 @@
 #!/usr/bin/env python3
 """
-Test script to verify NDI SDK installation
+Test NDI installation on Windows
+This script tests if NDI-Python works correctly
 """
 
 import sys
 import os
 
-def test_ndi_installation():
-    """Test if NDI SDK is properly installed"""
-    print("🔍 Testing NDI SDK Installation...")
-    
-    # Test 1: Check if NDI library files exist
-    print("\n1. Checking NDI library files...")
-    ndi_lib_paths = [
-        "/usr/local/lib/libndi.so",
-        "/usr/local/lib/libndi.so.5",
-        "/usr/local/lib/libndi.so.5.6.1",
-        "/usr/local/ndi-sdk/lib/x86_64-linux-gnu/libndi.so.5.6.1"
-    ]
-    
-    found_libs = []
-    for path in ndi_lib_paths:
-        if os.path.exists(path):
-            found_libs.append(path)
-            print(f"   ✅ Found: {path}")
-        else:
-            print(f"   ❌ Missing: {path}")
-    
-    if not found_libs:
-        print("   ❌ No NDI library files found!")
-        return False
-    
-    # Test 2: Check environment variables
-    print("\n2. Checking environment variables...")
-    env_vars = ['NDI_SDK_PATH', 'NDI_LIBRARY_PATH', 'LD_LIBRARY_PATH']
-    for var in env_vars:
-        value = os.environ.get(var, 'Not set')
-        print(f"   {var}: {value}")
-    
-    # Test 3: Try to import NDI Python module
-    print("\n3. Testing Python NDI module import...")
+def test_ndi_import():
+    """Test basic NDI import"""
     try:
-        import NDIlib as ndi
-        print("   ✅ NDIlib imported successfully!")
-        
-        # Test 4: Try to initialize NDI
-        print("\n4. Testing NDI initialization...")
-        if ndi.initialize():
-            print("   ✅ NDI initialized successfully!")
-            
-            # Test 5: Try to find NDI sources
-            print("\n5. Testing NDI source discovery...")
-            find = ndi.find_create_v2()
-            if find:
-                sources = ndi.find_get_current_sources(find)
-                print(f"   ✅ Found {len(sources)} NDI sources")
-                for i, source in enumerate(sources):
-                    print(f"      Source {i+1}: {source.ndi_name}")
-                ndi.find_destroy(find)
-            else:
-                print("   ⚠️  NDI finder creation failed")
-            
-            # Cleanup
-            ndi.destroy()
-            print("   ✅ NDI destroyed successfully!")
-            return True
-        else:
-            print("   ❌ NDI initialization failed!")
-            return False
-            
+        import ndi
+        print("✅ NDI import successful")
+        return True
     except ImportError as e:
-        print(f"   ❌ Failed to import NDIlib: {e}")
-        return False
-    except Exception as e:
-        print(f"   ❌ NDI test failed: {e}")
+        print(f"❌ NDI import failed: {e}")
         return False
 
+def test_ndi_initialize():
+    """Test NDI initialization"""
+    try:
+        import ndi
+        result = ndi.initialize()
+        if result:
+            print("✅ NDI initialization successful")
+            return True
+        else:
+            print("❌ NDI initialization failed")
+            return False
+    except Exception as e:
+        print(f"❌ NDI initialization error: {e}")
+        return False
+
+def test_ndi_sender():
+    """Test creating NDI sender"""
+    try:
+        import ndi
+        import numpy as np
+        
+        # Initialize NDI
+        if not ndi.initialize():
+            print("❌ NDI not initialized")
+            return False
+        
+        # Create test frame
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        
+        # Try to create sender
+        sender = ndi.send_send_video_v2("Test_Sender", frame)
+        if sender:
+            print("✅ NDI sender creation successful")
+            ndi.send_send_video_v2(sender, frame)  # Send test frame
+            print("✅ NDI frame sending successful")
+            return True
+        else:
+            print("❌ NDI sender creation failed")
+            return False
+            
+    except Exception as e:
+        print(f"❌ NDI sender test error: {e}")
+        return False
+
+def main():
+    """Run all NDI tests"""
+    print("🧪 Testing NDI Installation on Windows")
+    print("=" * 50)
+    
+    # Test 1: Import
+    print("\n1. Testing NDI import...")
+    import_success = test_ndi_import()
+    
+    if not import_success:
+        print("\n❌ NDI import failed. Please check NDI SDK installation.")
+        return False
+    
+    # Test 2: Initialize
+    print("\n2. Testing NDI initialization...")
+    init_success = test_ndi_initialize()
+    
+    if not init_success:
+        print("\n❌ NDI initialization failed. Please check NDI SDK path.")
+        return False
+    
+    # Test 3: Sender
+    print("\n3. Testing NDI sender creation...")
+    sender_success = test_ndi_sender()
+    
+    if not sender_success:
+        print("\n❌ NDI sender test failed. This is the 'capsule object' error.")
+        return False
+    
+    print("\n" + "=" * 50)
+    print("🎉 All NDI tests passed! NDI-Python is working correctly.")
+    print("✅ You can proceed with native NDI implementation.")
+    return True
+
 if __name__ == "__main__":
-    success = test_ndi_installation()
-    if success:
-        print("\n🎉 NDI SDK installation is working correctly!")
-        sys.exit(0)
-    else:
-        print("\n❌ NDI SDK installation has issues. Please check the installation steps.")
-        sys.exit(1)
+    success = main()
+    sys.exit(0 if success else 1)
