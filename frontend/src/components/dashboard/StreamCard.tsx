@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { StreamCardProps } from '../../types/dashboard';
+import { useDashboardStore } from '../../store/dashboard-store';
 
 export default function StreamCard({ 
   stream, 
@@ -12,6 +13,18 @@ export default function StreamCard({
   className = '' 
 }: StreamCardProps) {
   const [showStats, setShowStats] = useState(false);
+  const { devices } = useDashboardStore();
+  
+  // Find device state for this stream
+  const deviceId = (stream as any).deviceId;
+  const device = deviceId ? devices.find(d => d.deviceId === deviceId) : null;
+  const isStreaming = device?.isStreaming ?? true; // Default to true for backward compatibility
+  const isConnected = device?.isConnected ?? true;
+  
+  // If device is not found in devices array, it means it was removed
+  if (deviceId && !device) {
+    return null; // Don't render the card if device was removed
+  }
 
   const formatBitrate = (bitrate: number) => {
     if (bitrate >= 1000000) {
@@ -29,6 +42,18 @@ export default function StreamCard({
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  // Calculate streaming duration (only when actively streaming)
+  const getStreamingDuration = () => {
+    if (!isStreaming || !device) return '0:00';
+    
+    const now = new Date();
+    const lastSeenAt = new Date(device.lastSeenAt);
+    const diff = now.getTime() - lastSeenAt.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
+
   const getQualityColor = (bitrate: number) => {
     if (bitrate >= 1500000) return 'bg-green-500';
     if (bitrate >= 800000) return 'bg-yellow-500';
@@ -39,7 +64,7 @@ export default function StreamCard({
     <div 
       className={`bg-gray-800 rounded-lg overflow-hidden cursor-pointer transition-all hover:bg-gray-700 ${
         isSelected ? 'ring-2 ring-blue-500' : ''
-      } ${className}`}
+      } ${!isConnected ? 'opacity-50' : ''} ${className}`}
       onClick={() => onSelect(stream.id)}
     >
       {/* Video Preview Placeholder */}
@@ -47,23 +72,37 @@ export default function StreamCard({
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center text-gray-500">
             <div className="text-4xl mb-2">📹</div>
-            <div className="text-sm">Video Preview</div>
+            <div className="text-sm">
+              {!isConnected ? 'Device Disconnected' : 
+               !isStreaming ? 'Not Streaming' : 'Video Preview'}
+            </div>
             <div className="text-xs text-gray-600">
               {stream.resolution.width}×{stream.resolution.height}
             </div>
           </div>
         </div>
         
-        {/* Quality Indicator */}
-        {stream.stats && (
-          <div className="absolute top-2 left-2">
-            <div className={`w-3 h-3 rounded-full ${getQualityColor(stream.stats.bitrate)}`}></div>
-          </div>
-        )}
+        {/* Status Badge */}
+        <div className="absolute top-2 left-2">
+          {isStreaming ? (
+            <div className="bg-green-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+              Live Stream
+            </div>
+          ) : isConnected ? (
+            <div className="bg-yellow-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+              Not Streaming
+            </div>
+          ) : (
+            <div className="bg-red-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+              Disconnected
+            </div>
+          )}
+        </div>
+        
         
         {/* Duration */}
         <div className="absolute top-2 right-2 bg-black bg-opacity-70 text-white text-xs px-2 py-1 rounded">
-          {formatDuration(stream.connectedAt)}
+          {isStreaming ? getStreamingDuration() : formatDuration(stream.connectedAt)}
         </div>
         
         {/* Stats Toggle */}
@@ -84,16 +123,28 @@ export default function StreamCard({
           <h3 className="text-white font-semibold truncate">
             {stream.customName || stream.deviceName}
           </h3>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDisconnect(stream.id);
-            }}
-            className="text-red-400 hover:text-red-300 text-sm"
-            title="Disconnect stream"
-          >
-            ✕
-          </button>
+          <div className="flex space-x-1">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRename(stream.id, stream.customName || stream.deviceName);
+              }}
+              className="text-blue-400 hover:text-blue-300 text-sm"
+              title="Rename device"
+            >
+              ✏️
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDisconnect(stream.id);
+              }}
+              className="text-red-400 hover:text-red-300 text-sm"
+              title="Disconnect stream"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         
         <div className="text-xs text-gray-400 space-y-1">

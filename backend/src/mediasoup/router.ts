@@ -6,10 +6,14 @@ export interface StreamInfo {
   id: string;
   producerId: string;
   clientId: string;
+  deviceId?: string;
   deviceName: string;
   resolution: { width: number; height: number };
   bitrate: number;
   connectedAt: Date;
+  createdAt: Date;
+  fps: number;
+  kind: 'video' | 'audio';
   customName?: string;
   stats?: {
     bitrate: number;
@@ -60,19 +64,8 @@ export class MediasoupRouter {
     return transport;
   }
 
-  async createPlainTransport(): Promise<mediasoupTypes.PlainTransport> {
-    if (!this.router) {
-      throw new Error('Router not initialized');
-    }
 
-    const transport = await this.router.createPlainTransport({
-      ...mediasoupConfig.plainTransport,
-      appData: { clientId: `ndi-bridge-${Date.now()}` }
-    });
 
-    this.transports.set(transport.id, transport);
-    return transport;
-  }
 
   async createProducer(transportId: string, kind: 'audio' | 'video', rtpParameters: any): Promise<mediasoupTypes.Producer> {
     if (!this.router) {
@@ -84,8 +77,8 @@ export class MediasoupRouter {
       throw new Error('Transport not found or not a WebRTC transport');
     }
 
-    // Use transport ID as stable client identifier
-    const clientId = transport.id;
+    // Use transport.appData.clientId as stable identifier (we set it to deviceId upstream)
+    const clientId = (transport.appData?.clientId as string) || transport.id;
     
     const producer = await transport.produce({
       kind,
@@ -134,10 +127,14 @@ export class MediasoupRouter {
           id: streamId,
           producerId: producer.id,
           clientId: clientId,
+          deviceId: clientId,
           deviceName: `Device ${clientId.slice(-4)}`,
           resolution: { width: 1280, height: 720 }, // Default, will be updated from RTP parameters
           bitrate: 1000000, // Default 1Mbps
           connectedAt: new Date(),
+          createdAt: new Date(),
+          fps: 30,
+          kind: kind,
           stats: {
             bitrate: 0,
             packetsLost: 0,
@@ -173,19 +170,23 @@ export class MediasoupRouter {
     }
 
     const transport = this.transports.get(transportId);
-    if (!transport || !('consume' in transport)) {
-      throw new Error('Transport not found or not a WebRTC transport');
+    if (!transport) {
+      throw new Error('Transport not found');
     }
 
-    const consumer = await transport.consume({
-      producerId,
-      rtpCapabilities,
-      paused: false,
-      appData: { clientId: transport.appData.clientId }
-    });
-
-    this.consumers.set(consumer.id, consumer);
-    return consumer;
+    // Handle both WebRTC and Plain transports
+    if ('consume' in transport) {
+      const consumer = await transport.consume({
+        producerId,
+        rtpCapabilities,
+        paused: false,
+        appData: { clientId: transport.appData?.clientId || 'ndi-bridge' }
+      });
+      this.consumers.set(consumer.id, consumer);
+      return consumer;
+    } else {
+      throw new Error('Transport does not support consumption');
+    }
   }
 
   getRouterCapabilities() {
@@ -201,6 +202,23 @@ export class MediasoupRouter {
 
   getConsumer(consumerId: string): mediasoupTypes.Consumer | undefined {
     return this.consumers.get(consumerId);
+  }
+
+  async createPlainTransport(options: {
+    listenIp: { ip: string; announcedIp?: string };
+    rtcpMux?: boolean;
+    comedia?: boolean;
+  }): Promise<mediasoupTypes.PlainTransport> {
+    if (!this.router) throw new Error('Router not initialized');
+    
+    const transport = await this.router.createPlainTransport({
+      listenIp: options.listenIp,
+      rtcpMux: options.rtcpMux ?? true,
+      comedia: options.comedia ?? true
+    });
+    
+    this.transports.set(transport.id, transport);
+    return transport;
   }
 
   // Stream management methods

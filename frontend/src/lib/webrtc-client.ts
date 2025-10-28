@@ -52,6 +52,15 @@ export class WebRTCClient {
       // Set up socket event handlers
       this.setupSocketHandlers();
 
+      // Register device with persistent deviceId
+      const deviceId = (typeof window !== 'undefined') ? (localStorage.getItem('mcr_device_id') || `dev-${Math.random().toString(36).slice(2)}-${Date.now()}`) : `dev-${Date.now()}`;
+      if (typeof window !== 'undefined' && !localStorage.getItem('mcr_device_id')) {
+        localStorage.setItem('mcr_device_id', deviceId);
+      }
+      await new Promise<void>((resolve) => {
+        this.socket!.emit('register-device', { deviceId }, () => resolve());
+      });
+
       // Get router RTP capabilities
       const response = await fetch(`${this.config.serverUrl}/api/rtp-capabilities`);
       const { rtpCapabilities } = await response.json();
@@ -159,6 +168,15 @@ export class WebRTCClient {
       if (this.audioProducer) {
         this.audioProducer.close();
         this.audioProducer = null;
+      }
+
+      // Notify server that device stopped streaming
+      if (this.socket) {
+        this.socket.emit('stop-stream', {}, (response: any) => {
+          if (response?.error) {
+            console.error('Failed to notify server of stream stop:', response.error);
+          }
+        });
       }
 
       this.isStreaming = false;

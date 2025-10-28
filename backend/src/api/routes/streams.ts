@@ -117,3 +117,5 @@ router.get('/:id/stats', (req, res) => {
 
 export default router;
 
+// Note: devices endpoint will be mounted from server with a closure over devices map if needed
+

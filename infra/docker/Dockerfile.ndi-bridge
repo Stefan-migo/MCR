@@ -2,13 +2,32 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including NDI SDK
 RUN apt-get update && apt-get install -y \
     wget \
     gcc \
     g++ \
     make \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libavutil-dev \
+    libavfilter-dev \
+    libavdevice-dev \
+    libavresample-dev \
+    libavcodec-extra \
     && rm -rf /var/lib/apt/lists/*
+
+# Download and install NDI SDK
+RUN wget https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v5_Linux.tar.gz \
+    && tar -xzf Install_NDI_SDK_v5_Linux.tar.gz \
+    && cd NDI\ SDK\ for\ Linux \
+    && yes | ./Install_NDI_SDK_v5_Linux.sh \
+    && cd .. \
+    && rm -rf NDI* Install_NDI_SDK_v5_Linux.tar.gz
+
+# Set NDI library path
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
 # Copy requirements
 COPY requirements.txt .

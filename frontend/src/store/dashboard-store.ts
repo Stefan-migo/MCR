@@ -4,6 +4,7 @@ import { DashboardService, StreamInfo } from '../lib/dashboard-service';
 interface DashboardStore {
   // State
   streams: StreamInfo[];
+  devices: { deviceId: string; deviceName?: string; isConnected: boolean; isStreaming: boolean; streamId?: string | null; lastSeenAt: number }[];
   viewMode: 'grid' | 'list';
   selectedStream: string | null;
   isConnected: boolean;
@@ -24,6 +25,12 @@ interface DashboardStore {
   updateStreamStats: (streamId: string, stats: StreamInfo['stats']) => void;
   setStreams: (streams: StreamInfo[]) => void;
 
+  // Device management
+  upsertDevice: (device: { deviceId: string; deviceName?: string }) => void;
+  markDeviceDisconnected: (deviceId: string) => void;
+  removeDevice: (deviceId: string) => void;
+  updateDeviceStreaming: (deviceId: string, isStreaming: boolean, streamId?: string | null) => void;
+
   // Service management
   initializeService: (serverUrl: string) => Promise<void>;
   disconnectService: () => Promise<void>;
@@ -37,6 +44,7 @@ interface DashboardStore {
 export const useDashboardStore = create<DashboardStore>((set, get) => ({
   // Initial state
   streams: [],
+  devices: [],
   viewMode: 'grid',
   selectedStream: null,
   isConnected: false,
@@ -87,6 +95,34 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
 
   setStreams: (streams) => set({ streams }),
 
+  // Device management
+  upsertDevice: (device) => set((state) => {
+    const now = Date.now();
+    const existing = state.devices.find(d => d.deviceId === device.deviceId);
+    if (existing) {
+      return {
+        devices: state.devices.map(d => d.deviceId === device.deviceId ? { ...d, deviceName: device.deviceName || d.deviceName, isConnected: true, lastSeenAt: now } : d)
+      };
+    }
+    return {
+      devices: [...state.devices, { deviceId: device.deviceId, deviceName: device.deviceName, isConnected: true, isStreaming: false, streamId: null, lastSeenAt: now }]
+    };
+  }),
+  markDeviceDisconnected: (deviceId) => set((state) => ({
+    devices: state.devices.map(d => d.deviceId === deviceId ? { ...d, isConnected: false } : d)
+  })),
+  removeDevice: (deviceId) => set((state) => ({
+    devices: state.devices.filter(d => d.deviceId !== deviceId),
+    streams: state.streams.filter(s => (s as any).deviceId !== deviceId)
+  })),
+  updateDeviceStreaming: (deviceId, isStreaming, streamId) => set((state) => ({
+    devices: state.devices.map(d => 
+      d.deviceId === deviceId 
+        ? { ...d, isStreaming, streamId, lastSeenAt: Date.now() }
+        : d
+    )
+  })),
+
   // Service management
   initializeService: async (serverUrl) => {
     try {
@@ -100,6 +136,12 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
       };
 
       service.onStreamStarted = (stream) => {
+        const deviceId = (stream as any).deviceId as string | undefined;
+        if (deviceId) {
+          set((state) => ({
+            devices: state.devices.map(d => d.deviceId === deviceId ? { ...d, isStreaming: true, streamId: stream.id, lastSeenAt: Date.now(), isConnected: true } : d)
+          }));
+        }
         get().addStream(stream);
       };
 
@@ -108,7 +150,28 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
       };
 
       service.onStreamEnded = (streamId) => {
+        const s = get().streams.find(x => x.id === streamId) as any;
+        const deviceId = s?.deviceId as string | undefined;
+        if (deviceId) {
+          set((state) => ({
+            devices: state.devices.map(d => d.deviceId === deviceId ? { ...d, isStreaming: false, streamId: null } : d)
+          }));
+        }
         get().removeStream(streamId);
+      };
+
+      // Device presence
+      service.onDeviceConnected = (device) => {
+        get().upsertDevice(device);
+      };
+      service.onDeviceDisconnected = (deviceId) => {
+        get().markDeviceDisconnected(deviceId);
+      };
+      service.onDeviceRemoved = (deviceId) => {
+        get().removeDevice(deviceId);
+      };
+      service.onDeviceStreamingChanged = (data) => {
+        get().updateDeviceStreaming(data.deviceId, data.isStreaming, data.streamId);
       };
 
       service.onStreamNameUpdated = (streamId, name) => {

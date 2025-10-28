@@ -23,6 +23,7 @@ export class CameraService {
   private currentStream: MediaStream | null = null;
   private currentConstraints: CameraConstraints | null = null;
   private availableDevices: CameraCapabilities[] = [];
+  private persistentDeviceId: string | null = null;
 
   // Event callbacks
   public onStreamChange?: (stream: MediaStream | null) => void;
@@ -39,6 +40,21 @@ export class CameraService {
 
   constructor() {
     this.checkPermissions();
+    this.persistentDeviceId = CameraService.getOrCreateDeviceId();
+  }
+
+  static getOrCreateDeviceId(): string {
+    try {
+      const key = 'mcr_device_id';
+      const existing = localStorage.getItem(key);
+      if (existing && existing.length > 0) return existing;
+      const newId = `dev-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+      localStorage.setItem(key, newId);
+      return newId;
+    } catch {
+      // Fallback if localStorage blocked
+      return `dev-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+    }
   }
 
   async initialize(): Promise<void> {
@@ -365,6 +381,10 @@ export class CameraService {
 
   getAvailableDevices(): CameraCapabilities[] {
     return this.availableDevices;
+  }
+
+  getDeviceId(): string {
+    return this.persistentDeviceId || CameraService.getOrCreateDeviceId();
   }
 
   // Camera switching method

@@ -43,7 +43,8 @@ const io = new Server(serverToUse, {
     origin: [
       `${protocol}://localhost:3000`,
       `${protocol}://192.168.100.19:3000`,
-      `${protocol}://127.0.0.1:3000`
+      `${protocol}://127.0.0.1:3000`,
+      `${protocol}://0.0.0.0:3000`
     ],
     methods: ['GET', 'POST'],
   },
@@ -57,7 +58,8 @@ app.use(cors({
   origin: [
     `${protocol}://localhost:3000`,
     `${protocol}://192.168.100.19:3000`,
-    `${protocol}://127.0.0.1:3000`
+    `${protocol}://127.0.0.1:3000`,
+    `${protocol}://0.0.0.0:3000`
   ],
   credentials: true
 }));
@@ -86,14 +88,65 @@ app.get('/api/rtp-capabilities', (req, res) => {
   }
 });
 
+// In-memory device registry
+type DeviceInfo = {
+  deviceId: string;
+  socketId: string;
+  deviceName?: string;
+  isConnected: boolean;
+  isStreaming: boolean;
+  streamId?: string | null;
+  lastSeenAt: number;
+  removalTimer?: NodeJS.Timeout;
+};
+
+const devices: Map<string, DeviceInfo> = new Map();
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('📡 Client connected:', socket.id);
 
   // WebRTC signaling events
+  socket.on('register-device', (data: { deviceId: string; deviceName?: string }, callback?: (resp: any) => void) => {
+    try {
+      const { deviceId, deviceName } = data || ({} as any);
+      if (!deviceId) {
+        callback?.({ error: 'deviceId is required' });
+        return;
+      }
+
+      const existing = devices.get(deviceId);
+      if (existing?.removalTimer) {
+        clearTimeout(existing.removalTimer);
+        existing.removalTimer = undefined;
+      }
+
+      const info: DeviceInfo = {
+        deviceId,
+        socketId: socket.id,
+        deviceName: deviceName || existing?.deviceName,
+        isConnected: true,
+        isStreaming: existing?.isStreaming || false,
+        streamId: existing?.streamId || null,
+        lastSeenAt: Date.now()
+      };
+
+      devices.set(deviceId, info);
+      io.emit('device-connected', { deviceId, deviceName: info.deviceName });
+      callback?.({ success: true });
+    } catch (e) {
+      callback?.({ error: 'failed to register device' });
+    }
+  });
+
   socket.on('create-transport', async (data, callback) => {
     try {
       const transport = await mediasoupRouter.createWebRtcTransport();
+      // Attach deviceId (if provided) to transport appData via server-side map from socket
+      const deviceEntry = Array.from(devices.values()).find(d => d.socketId === socket.id);
+      if (deviceEntry) {
+        (transport as any).appData = { ...(transport as any).appData, clientId: deviceEntry.deviceId };
+      }
       callback({
         id: transport.id,
         iceParameters: transport.iceParameters,
@@ -137,9 +190,20 @@ io.on('connection', (socket) => {
         const streams = mediasoupRouter.getActiveStreams();
         const stream = streams.find(s => s.producerId === producer.id);
         if (stream) {
+          // mark device streaming
+          const deviceId = (mediasoupRouter.transports.get(data.transportId)?.appData?.clientId as string) || stream.deviceId || stream.clientId;
+          const dev = deviceId ? devices.get(deviceId) : undefined;
+          if (dev) {
+            dev.isStreaming = true;
+            dev.streamId = stream.id;
+            dev.lastSeenAt = Date.now();
+            devices.set(deviceId, dev);
+            // Emit device streaming state change
+            io.emit('device-streaming-changed', { deviceId, isStreaming: true, streamId: stream.id });
+          }
           // For now, always emit stream-started for new producers
           // The frontend will handle updating existing streams
-          io.emit('stream-started', { stream: stream });
+          io.emit('stream-started', { stream: { ...stream, deviceId } });
           console.log(`📡 Stream started for client ${stream.clientId}`);
         }
       }
@@ -150,15 +214,45 @@ io.on('connection', (socket) => {
         mediasoupRouter.handleProducerClosed(producer.id);
         
         // Find the stream and emit stream-ended event
-        const streams = mediasoupRouter.getActiveStreams();
-        const stream = streams.find(s => s.producerId === producer.id);
-        if (stream) {
-          io.emit('stream-ended', { streamId: stream.id });
-          console.log(`📡 Stream ended event sent for: ${stream.id}`);
+        const streamsNow = mediasoupRouter.getActiveStreams();
+        const endedStream = streamsNow.find(s => s.producerId === producer.id);
+        // endedStream might be gone after handleProducerClosed; derive deviceId from devices map by socket
+        const deviceEntry = Array.from(devices.values()).find(d => d.socketId === socket.id);
+        if (deviceEntry) {
+          deviceEntry.isStreaming = false;
+          deviceEntry.streamId = null;
+          devices.set(deviceEntry.deviceId, deviceEntry);
+          // Emit device streaming state change
+          io.emit('device-streaming-changed', { deviceId: deviceEntry.deviceId, isStreaming: false, streamId: null });
+        }
+        if (endedStream) {
+          io.emit('stream-ended', { streamId: endedStream.id });
+          console.log(`📡 Stream ended event sent for: ${endedStream.id}`);
         }
       });
     } catch (error) {
       callback({ error: 'Failed to create producer' });
+    }
+  });
+
+  // Handle device stopping stream (but staying connected)
+  socket.on('stop-stream', (data, callback) => {
+    try {
+      const deviceEntry = Array.from(devices.values()).find(d => d.socketId === socket.id);
+      if (deviceEntry) {
+        deviceEntry.isStreaming = false;
+        deviceEntry.streamId = null;
+        deviceEntry.lastSeenAt = Date.now();
+        devices.set(deviceEntry.deviceId, deviceEntry);
+        
+        // Emit device streaming state change
+        io.emit('device-streaming-changed', { deviceId: deviceEntry.deviceId, isStreaming: false, streamId: null });
+        callback({ success: true });
+      } else {
+        callback({ error: 'Device not found' });
+      }
+    } catch (error) {
+      callback({ error: 'Failed to stop stream' });
     }
   });
 
@@ -205,18 +299,104 @@ io.on('connection', (socket) => {
     }
   });
 
+  // NDI Bridge events
+  socket.on('ndi-bridge-connect', (data, callback) => {
+    try {
+      console.log('🎬 NDI Bridge connected:', socket.id);
+      callback({ success: true, message: 'NDI Bridge connected successfully' });
+    } catch (error) {
+      callback({ error: 'Failed to connect NDI Bridge' });
+    }
+  });
+
+  socket.on('ndi-bridge-request-streams', (data, callback) => {
+    try {
+      const streams = mediasoupRouter.getActiveStreams();
+      const streamList = streams.map(stream => ({
+        id: stream.id,
+        producer_id: stream.producerId,
+        device_name: stream.deviceName || stream.clientId,
+        resolution: stream.resolution || { width: 1280, height: 720 },
+        fps: stream.fps || 30,
+        kind: stream.kind,
+        created_at: stream.createdAt
+      }));
+      
+      callback({ 
+        success: true, 
+        streams: streamList,
+        count: streamList.length 
+      });
+    } catch (error) {
+      callback({ error: 'Failed to get active streams' });
+    }
+  });
+
+  socket.on('ndi-bridge-consume-stream', async (data, callback) => {
+    try {
+      const { stream_id, producer_id, rtp_capabilities } = data;
+      
+      // Get the producer
+      const producer = mediasoupRouter.getProducer(producer_id);
+      if (!producer) {
+        callback({ error: 'Producer not found' });
+        return;
+      }
+      
+      // Create PlainTransport for NDI bridge
+      const plainTransport = await mediasoupRouter.createPlainTransport({
+        listenIp: { ip: '0.0.0.0', announcedIp: '192.168.100.19' },
+        rtcpMux: false,
+        comedia: true
+      });
+      
+      // Create consumer on the plain transport
+      const consumer = await mediasoupRouter.createConsumer(
+        plainTransport.id,
+        producer_id,
+        rtp_capabilities
+      );
+      
+      callback({
+        success: true,
+        consumer_id: consumer.id,
+        transport: {
+          ip: '192.168.100.19',
+          port: plainTransport.tuple.localPort,
+          rtcpPort: plainTransport.rtcpTuple?.localPort
+        },
+        rtp_parameters: consumer.rtpParameters
+      });
+      
+      console.log(`🎬 NDI Bridge consuming stream: ${stream_id} -> ${producer_id} via PlainTransport ${plainTransport.id}`);
+    } catch (error) {
+      console.error('Failed to create consumer for NDI Bridge:', error);
+      callback({ error: 'Failed to create consumer' });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
-    
-    // Clean up streams for this client
-    const streams = mediasoupRouter.getActiveStreams();
-    const clientStreams = streams.filter(s => s.clientId === socket.id);
-    
-    clientStreams.forEach(stream => {
-      console.log(`🔌 Cleaning up stream: ${stream.id} for client: ${socket.id}`);
-      mediasoupRouter.handleProducerClosed(stream.producerId);
-      io.emit('stream-ended', { streamId: stream.id });
-    });
+
+    // Mark device disconnected and schedule removal in 30s if not streaming
+    const deviceEntry = Array.from(devices.values()).find(d => d.socketId === socket.id);
+    if (deviceEntry) {
+      deviceEntry.isConnected = false;
+      deviceEntry.lastSeenAt = Date.now();
+      devices.set(deviceEntry.deviceId, deviceEntry);
+      io.emit('device-disconnected', { deviceId: deviceEntry.deviceId });
+
+      if (deviceEntry.removalTimer) {
+        clearTimeout(deviceEntry.removalTimer);
+      }
+      deviceEntry.removalTimer = setTimeout(() => {
+        const current = devices.get(deviceEntry.deviceId);
+        if (current && !current.isConnected && !current.isStreaming) {
+          devices.delete(deviceEntry.deviceId);
+          io.emit('device-removed', { deviceId: deviceEntry.deviceId });
+        }
+      }, 30000);
+    }
   });
 });
 

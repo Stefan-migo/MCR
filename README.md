@@ -6,12 +6,18 @@ A professional real-time mobile camera streaming system designed for VJs, conten
 
 - **📱 Mobile Camera Streaming**: Professional mobile camera interface with quality controls
 - **🎛️ VJ Dashboard**: Real-time monitoring and control of multiple streams
+- **🎬 NDI Integration**: Convert streams to NDI sources for OBS Studio and Resolume
 - **⚡ Ultra-Low Latency**: Sub-100ms latency using WebRTC technology
 - **🔄 Multi-Stream Support**: Handle multiple mobile devices simultaneously
 - **📊 Live Statistics**: Real-time performance metrics and monitoring
 - **🎥 Quality Presets**: Low, Medium, High, and Ultra quality options
 - **🔒 Secure**: HTTPS required for mobile camera access
 - **📱 PWA Support**: App-like experience on mobile devices
+- **🏷️ Device Management**: Rename and organize devices from dashboard
+- **📡 Smart Connection Tracking**: Separate device presence from streaming state
+- **⏱️ Live Timers**: Real-time streaming duration tracking
+- **🎯 Status Indicators**: Live Stream, Not Streaming, and Disconnected states
+- **🐳 Docker Support**: Easy deployment with Docker and Docker Compose
 
 ## 🚀 Quick Start
 
@@ -53,16 +59,72 @@ A professional real-time mobile camera streaming system designed for VJs, conten
 
 4. **Start the servers**
    ```bash
+   # Option 1: Docker Compose (Recommended)
+   docker-compose up
+   
+   # Option 2: Manual start (Linux)
    # Terminal 1: Backend
    cd backend && npm run dev
    
    # Terminal 2: Frontend
    cd frontend && npm run dev
+   
+   # Terminal 3: NDI Bridge
+   cd ndi-bridge && python src/main.py
+   ```
+
+### Manual Installation (Linux)
+
+If Docker is not working, follow these steps for manual installation:
+
+1. **Install NDI SDK**
+   ```bash
+   # Download NDI SDK for Linux from https://www.ndi.tv/sdk/
+   # Extract and install
+   sudo mkdir -p /usr/local/ndi-sdk
+   sudo cp -r "NDI SDK for Linux"/* /usr/local/ndi-sdk/
+   sudo cp /usr/local/ndi-sdk/lib/x86_64-linux-gnu/libndi.so.5.6.1 /usr/local/lib/
+   sudo ln -sf /usr/local/lib/libndi.so.5.6.1 /usr/local/lib/libndi.so.5
+   sudo ln -sf /usr/local/lib/libndi.so.5 /usr/local/lib/libndi.so
+   sudo cp -r /usr/local/ndi-sdk/include/* /usr/local/include/
+   sudo ldconfig
+   ```
+
+2. **Install OBS Studio NDI Plugin**
+   ```bash
+   # Build OBS Studio NDI plugin from source
+   git clone https://github.com/Palakis/obs-ndi.git
+   cd obs-ndi
+   mkdir build && cd build
+   cmake -DCMAKE_BUILD_TYPE=Release ..
+   make -j4
+   
+   # Install the plugin
+   sudo cp obs-plugins/64bit/obs-ndi.so /usr/lib64/obs-plugins/
+   sudo cp -r data/obs-plugins/obs-ndi /usr/share/obs/obs-plugins/
+   sudo chmod 755 /usr/lib64/obs-plugins/obs-ndi.so
+   sudo chmod -R 755 /usr/share/obs/obs-plugins/obs-ndi
+   ```
+
+3. **Start all services manually**
+   ```bash
+   # Terminal 1: Backend (Port 3001)
+   cd backend && npm run dev
+   
+   # Terminal 2: Frontend (Port 3000)
+   cd frontend && npm run dev
+   
+   # Terminal 3: NDI Bridge (Port 8000)
+   cd ndi-bridge && source venv/bin/activate && python src/main.py
+   
+   # Terminal 4: Test NDI Sources
+   cd ndi-bridge && ./create_ndi_source "FEDORA (Test_NDI_Source)" 1280 720 30
    ```
 
 5. **Access the application**
    - **Mobile Stream**: `https://localhost:3000/stream`
    - **VJ Dashboard**: `https://localhost:3000/dashboard`
+   - **NDI Bridge API**: `http://localhost:8000/health`
 
 ## 🏗️ Architecture
 
@@ -81,6 +143,12 @@ A professional real-time mobile camera streaming system designed for VJs, conten
                     │     Backend Server        │
                     │   (Node.js + Mediasoup)   │
                     │   WebRTC SFU + Socket.io  │
+                    └───────────────────────────┘
+                                 │
+                    ┌─────────────▼─────────────┐
+                    │   Professional Software   │
+                    │   OBS Studio, Resolume    │
+                    │   and other NDI clients   │
                     └───────────────────────────┘
 ```
 
@@ -103,6 +171,24 @@ The VJ dashboard offers comprehensive stream management:
 - **Grid/List Views**: Toggle between different display modes
 - **Live Statistics**: Bitrate, latency, packet loss, frame rate
 - **Connection Status**: Visual indicators for connection health
+- **Device Organization**: Rename devices for better organization
+- **Smart State Tracking**: Separate device connection from streaming state
+- **Live Timers**: Real-time streaming duration with pause/resume
+- **Status Badges**: Clear visual indicators (Live Stream, Not Streaming, Disconnected)
+- **Auto-cleanup**: Devices automatically removed after 30s when disconnected
+
+## 🎬 NDI Bridge
+
+The NDI Bridge converts WebRTC streams to NDI sources for professional video software:
+
+- **NDI Integration**: Convert mobile streams to NDI sources
+- **Multi-Stream Support**: Handle multiple simultaneous streams
+- **Automatic Discovery**: Auto-detect and consume new streams
+- **Professional Integration**: Works with OBS Studio, Resolume, and other NDI software
+- **Low Latency**: <500ms end-to-end latency
+- **REST API**: Monitor and control via HTTP API
+- **Docker Support**: Easy deployment with Docker
+- **Performance Monitoring**: Real-time statistics and health checks
 
 ## 🔧 Technology Stack
 
@@ -157,13 +243,30 @@ npm run start            # Start production servers
 
 ## 📈 Roadmap
 
-- [x] **Phase 1**: Foundation & Core Infrastructure
-- [x] **Phase 2**: WebRTC Streaming & Mobile Client
-- [x] **Phase 2.4**: VJ Dashboard
-- [ ] **Phase 3**: NDI Bridge Development
+- [x] **Phase 1**: Foundation & Core Infrastructure ✅
+- [x] **Phase 2.1**: Mediasoup Setup ✅
+- [x] **Phase 2.2**: WebRTC Signaling ✅
+- [x] **Phase 2.3**: Mobile Client ✅
+- [x] **Phase 2.4**: VJ Dashboard ✅
+- [x] **Phase 3**: NDI Bridge Development ✅
 - [ ] **Phase 4**: Advanced Features & Controls
 - [ ] **Phase 5**: Production Optimization
 - [ ] **Phase 6**: Deployment & Scaling
+
+### Recent Updates (Phase 3 Complete)
+
+- ✅ **NDI Integration**: Convert WebRTC streams to NDI sources
+- ✅ **Multi-Stream Support**: Handle multiple simultaneous streams
+- ✅ **Automatic Discovery**: Auto-detect and consume new streams
+- ✅ **Professional Integration**: Works with OBS Studio and Resolume
+- ✅ **Docker Support**: Easy deployment with Docker Compose
+- ✅ **REST API**: Monitor and control via HTTP API
+- ✅ **Performance Monitoring**: Real-time statistics and health checks
+- ✅ **Low Latency**: <500ms end-to-end latency achieved
+- ✅ **Manual Server Setup**: Complete manual installation guide for Linux
+- ✅ **NDI SDK Installation**: Full NDI SDK setup and configuration
+- ✅ **OBS Studio Integration**: NDI plugin installation and testing
+- ✅ **Real Mobile Camera Testing**: End-to-end pipeline validation
 
 ## 🤝 Contributing
 

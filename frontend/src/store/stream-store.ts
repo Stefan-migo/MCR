@@ -58,7 +58,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   showControls: true,
   isFullscreen: false,
   error: null,
-  serverUrl: process.env.NEXT_PUBLIC_BACKEND_URL || 'https://192.168.100.19:3001',
+  serverUrl: process.env.NEXT_PUBLIC_API_URL || 'https://192.168.100.19:3001',
   enableAudio: true,
   enableVideo: true,
 

@@ -35,9 +35,9 @@ export default function DashboardPage() {
         // Add a small delay to ensure backend is ready
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Use localhost for desktop, network IP for mobile
+        // Use correct IP address for backend connection
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const serverUrl = process.env.NEXT_PUBLIC_WS_URL || (isMobile ? 'wss://192.168.100.19:3001' : 'wss://localhost:3001');
+        const serverUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://192.168.100.19:3001';
         
         console.log('🚀 Initializing dashboard service with URL:', serverUrl);
         await initializeService(serverUrl);
@@ -82,9 +82,12 @@ export default function DashboardPage() {
     }
   };
 
-  const handleStreamRename = async (streamId: string, name: string) => {
+  const handleStreamRename = async (streamId: string, currentName: string) => {
     try {
-      await updateStreamName(streamId, name);
+      const newName = prompt(`Enter new name for "${currentName}":`, currentName);
+      if (newName && newName.trim() && newName !== currentName) {
+        await updateStreamName(streamId, newName.trim());
+      }
     } catch (error) {
       console.error('Failed to rename stream:', error);
     }

@@ -37,6 +37,10 @@ export class DashboardService {
   public onStreamStarted?: (stream: StreamInfo) => void;
   public onStreamUpdated?: (stream: StreamInfo) => void;
   public onStreamEnded?: (streamId: string) => void;
+  public onDeviceConnected?: (device: { deviceId: string; deviceName?: string }) => void;
+  public onDeviceDisconnected?: (deviceId: string) => void;
+  public onDeviceRemoved?: (deviceId: string) => void;
+  public onDeviceStreamingChanged?: (data: { deviceId: string; isStreaming: boolean; streamId?: string | null }) => void;
   public onStreamNameUpdated?: (streamId: string, name: string) => void;
   public onStatsUpdate?: (streams: StreamInfo[]) => void;
   public onError?: (error: Error) => void;
@@ -235,6 +239,24 @@ export class DashboardService {
     this.socket.on('stream-ended', (data: { streamId: string }) => {
       console.log('Stream ended:', data.streamId);
       this.onStreamEnded?.(data.streamId);
+    });
+
+    // Device presence events
+    this.socket.on('device-connected', (data: { deviceId: string; deviceName?: string }) => {
+      console.log('Device connected:', data.deviceId);
+      this.onDeviceConnected?.(data);
+    });
+    this.socket.on('device-disconnected', (data: { deviceId: string }) => {
+      console.log('Device disconnected:', data.deviceId);
+      this.onDeviceDisconnected?.(data.deviceId);
+    });
+    this.socket.on('device-removed', (data: { deviceId: string }) => {
+      console.log('Device removed:', data.deviceId);
+      this.onDeviceRemoved?.(data.deviceId);
+    });
+    this.socket.on('device-streaming-changed', (data: { deviceId: string; isStreaming: boolean; streamId?: string | null }) => {
+      console.log('Device streaming changed:', data);
+      this.onDeviceStreamingChanged?.(data);
     });
 
     this.socket.on('stream-name-updated', (data: { streamId: string; name: string }) => {

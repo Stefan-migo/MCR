@@ -11,8 +11,8 @@ services:
       - /app/.next
     environment:
       - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=http://192.168.100.16:3001
-      - NEXT_PUBLIC_WS_URL=ws://192.168.100.16:3001
+      - NEXT_PUBLIC_API_URL=https://192.168.100.19:3001
+      - NEXT_PUBLIC_WS_URL=wss://192.168.100.19:3001
     command: npm run dev
     depends_on:
       - backend
@@ -29,7 +29,7 @@ services:
     environment:
       - NODE_ENV=development
       - BACKEND_PORT=3001
-      - CORS_ORIGIN=http://192.168.100.16:3000
+      - CORS_ORIGIN=https://192.168.100.19:3000
     command: npm run dev
 
   ndi-bridge:
@@ -40,13 +40,28 @@ services:
       - "8000:8000"
     volumes:
       - ./ndi-bridge:/app
-    network_mode: host
+    network_mode: host  # Required for NDI discovery
     environment:
       - PYTHONUNBUFFERED=1
       - NDI_BRIDGE_PORT=8000
-      - BACKEND_URL=http://192.168.100.16:3001
+      - NDI_BRIDGE_HOST=0.0.0.0
+      - BACKEND_URL=https://192.168.100.19:3001
+      - BACKEND_WS_URL=wss://192.168.100.19:3001
       - NDI_SOURCE_PREFIX=MobileCam
+      - MAX_STREAMS=10
+      - FRAME_BUFFER_SIZE=10
+      - AUTO_CONSUME=true
+      - DEFAULT_WIDTH=1280
+      - DEFAULT_HEIGHT=720
+      - DEFAULT_FPS=30
+      - PROCESSING_QUALITY=high
+      - ENABLE_HARDWARE_ACCELERATION=true
+      - LOG_LEVEL=INFO
+      - CONNECTION_TIMEOUT=30
+      - HEALTH_CHECK_INTERVAL=30
+      - STATS_UPDATE_INTERVAL=5
     command: python3 src/main.py
     depends_on:
       - backend
+    restart: unless-stopped
 

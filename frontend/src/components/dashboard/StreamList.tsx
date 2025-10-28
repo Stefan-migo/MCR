@@ -1,6 +1,7 @@
 'use client';
 
 import { StreamListProps } from '../../types/dashboard';
+import { useDashboardStore } from '../../store/dashboard-store';
 
 export default function StreamList({ 
   streams, 
@@ -10,6 +11,7 @@ export default function StreamList({
   onStreamRename, 
   className = '' 
 }: StreamListProps) {
+  const { devices } = useDashboardStore();
   const formatBitrate = (bitrate: number) => {
     if (bitrate >= 1000000) {
       return `${(bitrate / 1000000).toFixed(1)} Mbps`;
@@ -21,6 +23,18 @@ export default function StreamList({
     const now = new Date();
     const connectedDate = typeof connectedAt === 'string' ? new Date(connectedAt) : connectedAt;
     const diff = now.getTime() - connectedDate.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  // Calculate streaming duration (only when actively streaming)
+  const getStreamingDuration = (device: any) => {
+    if (!device?.isStreaming) return '0:00';
+    
+    const now = new Date();
+    const lastSeenAt = new Date(device.lastSeenAt);
+    const diff = now.getTime() - lastSeenAt.getTime();
     const minutes = Math.floor(diff / 60000);
     const seconds = Math.floor((diff % 60000) / 1000);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -71,12 +85,24 @@ export default function StreamList({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
-            {streams.map((stream) => (
+            {streams.map((stream) => {
+              // Find device state for this stream
+              const deviceId = (stream as any).deviceId;
+              const device = deviceId ? devices.find(d => d.deviceId === deviceId) : null;
+              const isStreaming = device?.isStreaming ?? true;
+              const isConnected = device?.isConnected ?? true;
+              
+              // If device is not found in devices array, it means it was removed
+              if (deviceId && !device) {
+                return null; // Don't render the row if device was removed
+              }
+              
+              return (
               <tr 
                 key={stream.id}
                 className={`hover:bg-gray-700 cursor-pointer transition-colors ${
                   selectedStream === stream.id ? 'bg-blue-900 bg-opacity-30' : ''
-                }`}
+                } ${!isConnected ? 'opacity-50' : ''}`}
                 onClick={() => onStreamSelect(stream.id)}
               >
                 <td className="px-4 py-4 whitespace-nowrap">
@@ -87,8 +113,24 @@ export default function StreamList({
                       </div>
                     </div>
                     <div className="ml-4">
-                      <div className="text-sm font-medium text-white">
-                        {stream.customName || stream.deviceName}
+                      <div className="flex items-center space-x-2">
+                        <div className="text-sm font-medium text-white">
+                          {stream.customName || stream.deviceName}
+                        </div>
+                        {/* Status Badge */}
+                        {isStreaming ? (
+                          <span className="bg-green-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+                            Live
+                          </span>
+                        ) : isConnected ? (
+                          <span className="bg-yellow-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+                            Not Streaming
+                          </span>
+                        ) : (
+                          <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full font-medium">
+                            Disconnected
+                          </span>
+                        )}
                       </div>
                       <div className="text-sm text-gray-400">
                         {stream.deviceName}
@@ -105,14 +147,14 @@ export default function StreamList({
                   <div className={`text-sm font-mono ${getQualityColor(stream.bitrate)}`}>
                     {formatBitrate(stream.bitrate)}
                   </div>
-                  {stream.stats && (
+                  {isStreaming && stream.stats && (
                     <div className="text-xs text-gray-400">
                       {stream.stats.frameRate} fps
                     </div>
                   )}
                 </td>
                 <td className="px-4 py-4 whitespace-nowrap">
-                  {stream.stats ? (
+                  {isStreaming && stream.stats ? (
                     <div className="text-sm text-white">
                       <div className="font-mono">{stream.stats.rtt}ms</div>
                       <div className="text-xs text-gray-400">
@@ -125,7 +167,7 @@ export default function StreamList({
                 </td>
                 <td className="px-4 py-4 whitespace-nowrap">
                   <div className="text-sm text-white font-mono">
-                    {formatDuration(stream.connectedAt)}
+                    {isStreaming ? getStreamingDuration(device) : formatDuration(stream.connectedAt)}
                   </div>
                 </td>
                 <td className="px-4 py-4 whitespace-nowrap text-sm font-medium">
@@ -153,7 +195,8 @@ export default function StreamList({
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
