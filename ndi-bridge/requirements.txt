@@ -1,27 +1,29 @@
-# WebRTC
-aiortc>=1.5.0
-aiohttp>=3.8.0
-
-# Video Processing
-opencv-python>=4.8.0
-numpy>=1.24.0
-av>=10.0.0
-
-# API Server
+# Core dependencies
 fastapi>=0.100.0
 uvicorn>=0.20.0
-
-# Configuration
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
-
-# WebSocket
 websockets>=11.0
+python-socketio>=5.8.0
+aiohttp>=3.8.0
 
-# NDI
+# Video processing
+numpy>=1.24.0
+opencv-python>=4.8.0
+aiortc>=1.5.0
+av>=10.0.0
+
+# NDI support
 ndi-python>=5.1.0
 
-# Additional dependencies
-asyncio-mqtt>=0.11.0
+# GStreamer support (optional)
+PyGObject>=3.42.0
 
+# Monitoring and logging
+prometheus-client>=0.17.0
+psutil>=5.9.0
+
+# Development dependencies
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

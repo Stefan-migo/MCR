@@ -31,6 +31,12 @@ export class MediasoupRouter {
   private producers: Map<string, mediasoupTypes.Producer> = new Map();
   private consumers: Map<string, mediasoupTypes.Consumer> = new Map();
   private streamMetadata: Map<string, StreamInfo> = new Map();
+  private plainTransports: Map<string, {
+    transport: mediasoupTypes.PlainTransport;
+    streamId: string;
+    producerId: string;
+    createdAt: Date;
+  }> = new Map();
 
   async initialize(): Promise<void> {
     try {
@@ -221,6 +227,53 @@ export class MediasoupRouter {
     return transport;
   }
 
+  async createPlainTransportForStream(
+    streamId: string, 
+    producerId: string
+  ): Promise<{
+    transport: mediasoupTypes.PlainTransport;
+    tuple: { ip: string; port: number };
+    rtcpTuple?: { ip: string; port: number };
+  }> {
+    if (!this.router) throw new Error('Router not initialized');
+    
+    const config = mediasoupConfig.plainTransport;
+    const transport = await this.router.createPlainTransport({
+      listenIp: config.listenIp,
+      rtcpMux: config.rtcpMux,
+      comedia: config.comedia,
+      enableSrtp: config.enableSrtp,
+      enableSctp: config.enableSctp,
+      appData: { streamId, producerId, type: 'ndi-bridge' }
+    });
+    
+    // Store transport mapping
+    this.plainTransports.set(transport.id, {
+      transport,
+      streamId,
+      producerId,
+      createdAt: new Date()
+    });
+    
+    // Monitor transport events
+    transport.on('routerclose', () => {
+      console.log(`PlainTransport ${transport.id} closed due to router closure`);
+      this.plainTransports.delete(transport.id);
+    });
+    
+    return {
+      transport,
+      tuple: {
+        ip: transport.tuple.localIp,
+        port: transport.tuple.localPort
+      },
+      rtcpTuple: transport.rtcpTuple ? {
+        ip: transport.rtcpTuple.localIp,
+        port: transport.rtcpTuple.localPort
+      } : undefined
+    };
+  }
+
   // Stream management methods
   getActiveStreams(): StreamInfo[] {
     return Array.from(this.streamMetadata.values());
@@ -304,6 +357,33 @@ export class MediasoupRouter {
     return false;
   }
 
+  // PlainTransport management methods
+  getPlainTransports() {
+    return Array.from(this.plainTransports.values());
+  }
+
+  getStreamByProducerId(producerId: string): StreamInfo | undefined {
+    return Array.from(this.streamMetadata.values()).find(s => s.producerId === producerId);
+  }
+
+  async closePlainTransportForProducer(producerId: string): Promise<boolean> {
+    const plainTransport = Array.from(this.plainTransports.values())
+      .find(pt => pt.producerId === producerId);
+    
+    if (plainTransport) {
+      try {
+        plainTransport.transport.close();
+        this.plainTransports.delete(plainTransport.transport.id);
+        console.log(`Closed PlainTransport for producer ${producerId}`);
+        return true;
+      } catch (error) {
+        console.error(`Error closing PlainTransport for producer ${producerId}:`, error);
+        return false;
+      }
+    }
+    return false;
+  }
+
   async close(): Promise<void> {
     if (this.worker) {
       this.worker.close();
@@ -314,6 +394,7 @@ export class MediasoupRouter {
     this.producers.clear();
     this.consumers.clear();
     this.streamMetadata.clear();
+    this.plainTransports.clear();
   }
 }
 

@@ -59,18 +59,31 @@ export class CameraService {
 
   async initialize(): Promise<void> {
     try {
+      (window as any).debugLogger?.addLog('info', '📷 Camera Service: Starting initialization...');
+      (window as any).debugLogger?.addLog('info', '📱 Mobile device detected', CameraService.isMobileDevice());
+      (window as any).debugLogger?.addLog('info', '🍎 iOS device detected', CameraService.isIOSDevice());
+      (window as any).debugLogger?.addLog('info', '🔒 Protocol', location.protocol);
+      (window as any).debugLogger?.addLog('info', '🌐 Host', location.host);
+      
       // Check if getUserMedia is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        (window as any).debugLogger?.addLog('error', '❌ getUserMedia not supported');
         // Check if we're on HTTP (which blocks camera access on mobile)
         if (location.protocol === 'http:' && CameraService.isMobileDevice()) {
           throw new Error('Camera access requires HTTPS on mobile devices. Please use https://192.168.100.19:3000 and accept the security certificate.');
         }
         throw new Error('Camera access not supported in this browser');
       }
+      
+      (window as any).debugLogger?.addLog('success', '✅ getUserMedia is supported');
 
       // Get available camera devices
+      (window as any).debugLogger?.addLog('info', '📷 Enumerating camera devices...');
       await this.updateAvailableDevices();
+      (window as any).debugLogger?.addLog('success', '✅ Camera Service initialized successfully');
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      (window as any).debugLogger?.addLog('error', '❌ Camera Service initialization failed', errorMessage);
       this.onError?.(error as Error);
       throw error;
     }
@@ -78,8 +91,13 @@ export class CameraService {
 
   async startCamera(constraints?: Partial<CameraConstraints>): Promise<MediaStream> {
     try {
+      (window as any).debugLogger?.addLog('info', '📷 Starting camera...');
+      
       // Stop current stream if active
-      await this.stopCamera();
+      if (this.currentStream) {
+        (window as any).debugLogger?.addLog('info', '📷 Stopping current stream...');
+        await this.stopCamera();
+      }
 
       // Set default constraints
       const defaultConstraints: CameraConstraints = {

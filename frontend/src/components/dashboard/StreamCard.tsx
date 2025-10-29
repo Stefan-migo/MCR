@@ -67,20 +67,38 @@ export default function StreamCard({
       } ${!isConnected ? 'opacity-50' : ''} ${className}`}
       onClick={() => onSelect(stream.id)}
     >
-      {/* Video Preview Placeholder */}
+      {/* Video Preview */}
       <div className="relative aspect-video bg-gray-900">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-center text-gray-500">
-            <div className="text-4xl mb-2">📹</div>
-            <div className="text-sm">
-              {!isConnected ? 'Device Disconnected' : 
-               !isStreaming ? 'Not Streaming' : 'Video Preview'}
-            </div>
-            <div className="text-xs text-gray-600">
-              {stream.resolution.width}×{stream.resolution.height}
+        {isStreaming && device?.streamId ? (
+          <video
+            ref={(video) => {
+              if (video && device?.streamId) {
+                // Video stream will be handled by the WebRTC client
+                // This is just a placeholder for now
+              }
+            }}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+            style={{
+              transform: 'scaleX(-1)', // Mirror the video for selfie mode
+            }}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-center text-gray-500">
+              <div className="text-4xl mb-2">📹</div>
+              <div className="text-sm">
+                {!isConnected ? 'Device Disconnected' : 
+                 !isStreaming ? 'Not Streaming' : 'Video Preview'}
+              </div>
+              <div className="text-xs text-gray-600">
+                {stream.resolution.width}×{stream.resolution.height}
+              </div>
             </div>
           </div>
-        </div>
+        )}
         
         {/* Status Badge */}
         <div className="absolute top-2 left-2">

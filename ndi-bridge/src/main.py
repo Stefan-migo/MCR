@@ -17,6 +17,8 @@ from datetime import datetime
 # Import our modules
 from config.settings import get_settings, Settings
 from services.stream_manager import StreamManager
+from utils.logger import setup_production_logging
+from utils.metrics import start_metrics_server
 
 # Load environment variables
 load_dotenv()
@@ -24,11 +26,8 @@ load_dotenv()
 # Get settings
 settings = get_settings()
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
-    format=settings.log_format
-)
+# Configure structured logging
+setup_production_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 # FastAPI app
@@ -176,6 +175,101 @@ async def get_config():
         logger.error(f"Error getting config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """
+    Comprehensive health check with diagnostics
+    """
+    try:
+        health_data = {
+            "status": "ok",
+            "timestamp": datetime.now().isoformat(),
+            "service": "NDI Bridge",
+            "version": "2.0.0",
+            "components": {}
+        }
+        
+        # Check stream manager
+        if stream_manager:
+            stats = stream_manager.get_all_stats()
+            health_data["components"]["stream_manager"] = {
+                "status": "healthy",
+                "active_streams": stats["total_active_streams"],
+                "total_created": stats["manager_stats"]["total_streams_created"],
+                "uptime_seconds": (datetime.now() - stats["manager_stats"]["start_time"]).total_seconds()
+            }
+            
+            # Check individual streams
+            stream_health = {}
+            for stream_id, stream_stats in stats["stream_stats"].items():
+                ndi_manager = stream_manager.ndi_senders.get(stream_id)
+                if ndi_manager:
+                    ndi_health = ndi_manager.get_stats()
+                    stream_health[stream_id] = {
+                        "healthy": ndi_health.get('healthy', False),
+                        "method": ndi_health.get('method', 'unknown'),
+                        "frame_count": ndi_health.get('frame_count', 0)
+                    }
+            
+            health_data["streams"] = stream_health
+        else:
+            health_data["components"]["stream_manager"] = {
+                "status": "unhealthy",
+                "error": "Not initialized"
+            }
+        
+        # Check NDI SDK availability
+        health_data["components"]["ndi_sdk"] = {
+            "available": settings._check_ndi_sdk_availability(),
+            "method": "ndi-python" if settings._check_ndi_sdk_availability() else "ffmpeg-fallback"
+        }
+        
+        # Check system resources
+        try:
+            import psutil
+            health_data["system"] = {
+                "cpu_percent": psutil.cpu_percent(),
+                "memory_percent": psutil.virtual_memory().percent,
+                "disk_percent": psutil.disk_usage('/').percent
+            }
+        except ImportError:
+            health_data["system"] = {
+                "error": "psutil not available"
+            }
+        
+        return health_data
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+
+@app.get("/health/liveness")
+async def liveness_probe():
+    """
+    Kubernetes liveness probe
+    """
+    return {"status": "alive"}
+
+@app.get("/health/readiness")
+async def readiness_probe():
+    """
+    Kubernetes readiness probe
+    """
+    if stream_manager and stream_manager.signaling.is_connected:
+        return {"status": "ready"}
+    else:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": "Not connected to backend"}
+        )
+
 
 async def start_ndi_bridge():
     """Initialize and start the NDI bridge service"""
@@ -203,6 +297,9 @@ async def start_ndi_bridge():
             logger.warning("Please install NDI SDK and ndi-python package")
         else:
             logger.info("✅ NDI SDK available")
+        
+        # Start metrics server
+        start_metrics_server(9090)
         
         # Initialize stream manager
         stream_manager = StreamManager(

@@ -122,9 +122,8 @@ class WebRTCConsumer:
                 "transport_info": transport_info
             }
             
-            # For now, start test pattern generation instead of RTP reception
-            # This demonstrates the pipeline is working
-            asyncio.create_task(self._generate_test_pattern_loop(stream_id))
+            # Start RTP packet reception to get real mobile camera feed
+            asyncio.create_task(self._receive_rtp_packets(stream_id, transport_info, rtp_parameters))
             
             logger.info(f"Started consuming stream: {stream_id}")
             return True
@@ -137,90 +136,65 @@ class WebRTCConsumer:
     
     async def _receive_rtp_packets(self, stream_id: str, transport_info: dict, rtp_parameters: dict):
         """
-        Receive RTP packets directly from PlainTransport and decode video frames
-        
-        Args:
-            stream_id: Stream identifier
-            transport_info: Transport information (IP, port)
-            rtp_parameters: RTP parameters for decoding
+        Receive real RTP packets from Mediasoup PlainTransport
         """
         try:
-            import socket
-            import struct
-            import cv2
-            import numpy as np
+            from webrtc.rtp_receiver import RTPReceiver
+            from webrtc.gstreamer_receiver import GStreamerRTPReceiver
             
-            ip = transport_info.get('ip', '192.168.100.19')
-            port = transport_info.get('port', 5004)
+            # Extract transport details
+            transport_ip = transport_info.get('ip')
+            transport_port = transport_info.get('port')
             
-            logger.info(f"Starting RTP packet reception for {stream_id} from {ip}:{port}")
+            logger.info(f"🎥 Starting real RTP reception for {stream_id}")
+            logger.info(f"📡 Transport: {transport_ip}:{transport_port}")
             
-            # Create UDP socket for RTP reception
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(('0.0.0.0', port))  # Listen on the actual RTP port
+            # Try aiortc first
+            rtp_receiver = RTPReceiver(
+                stream_id=stream_id,
+                transport_ip=transport_ip,
+                transport_port=transport_port,
+                on_frame=lambda frame: self._forward_frame_to_ndi(stream_id, frame)
+            )
             
-            # Get codec info
-            codecs = rtp_parameters.get('codecs', [])
-            video_codec = next((c for c in codecs if c['mimeType'].startswith('video/')), None)
-            
-            if not video_codec:
-                logger.error(f"No video codec found for {stream_id}")
-                return
-            
-            payload_type = video_codec['payloadType']
-            codec_name = video_codec['mimeType'].split('/')[1]
-            
-            logger.info(f"Listening for {codec_name} RTP packets on port {port}")
-            
-            frame_count = 0
-            buffer = b''
-            
-            while stream_id in self.consumers:
-                try:
-                    # Receive RTP packet
-                    data, addr = sock.recvfrom(1500)
-                    
-                    # Parse RTP header (simplified)
-                    if len(data) < 12:
-                        continue
-                    
-                    # Check payload type
-                    payload_type_byte = data[1] & 0x7F
-                    if payload_type_byte != payload_type:
-                        continue
-                    
-                    # Extract payload (skip RTP header)
-                    payload = data[12:]
-                    buffer += payload
-                    
-                    # For now, simulate frame generation since RTP decoding is complex
-                    # In a real implementation, you'd need to:
-                    # 1. Reassemble fragmented RTP packets
-                    # 2. Decode the video codec (VP8/H.264)
-                    # 3. Convert to OpenCV format
-                    
-                    frame_count += 1
-                    
-                    # Generate test pattern every 30 packets (simulate 1fps)
-                    if frame_count % 30 == 0:
-                        # Create a test pattern frame
-                        img = self._generate_test_pattern(stream_id, frame_count)
-                        
-                        # Send frame to NDI pipeline
-                        if self.on_frame_received:
-                            self.on_frame_received(stream_id, img)
-                        
-                        logger.info(f"Generated test frame {frame_count//30} for {stream_id}")
-                    
-                except Exception as e:
-                    logger.error(f"Error receiving RTP packet for {stream_id}: {e}")
-                    break
-            
-            sock.close()
-            logger.info(f"Stopped RTP reception for {stream_id}")
+            # Start receiving with aiortc
+            if await rtp_receiver.start(rtp_parameters):
+                # Store receiver for cleanup
+                self.rtp_receivers = getattr(self, 'rtp_receivers', {})
+                self.rtp_receivers[stream_id] = rtp_receiver
+                logger.info(f"✅ Real RTP reception started for {stream_id}")
+            else:
+                logger.warning(f"⚠️ aiortc failed for {stream_id}, trying GStreamer fallback")
+                
+                # Fallback to GStreamer
+                codec = rtp_parameters.get('codecs', [{}])[0].get('mimeType', 'video/VP8').split('/')[1]
+                gst_receiver = GStreamerRTPReceiver(
+                    stream_id=stream_id,
+                    transport_ip=transport_ip,
+                    transport_port=transport_port,
+                    codec=codec,
+                    on_frame=lambda frame: self._forward_frame_to_ndi(stream_id, frame)
+                )
+                
+                if await gst_receiver.start():
+                    self.rtp_receivers = getattr(self, 'rtp_receivers', {})
+                    self.rtp_receivers[stream_id] = gst_receiver
+                    logger.info(f"✅ GStreamer RTP reception started for {stream_id}")
+                else:
+                    logger.error(f"❌ Both aiortc and GStreamer failed for {stream_id}")
+                    # Fallback to test pattern
+                    await self._generate_test_pattern_loop(stream_id)
             
         except Exception as e:
-            logger.error(f"Error in RTP packet reception for {stream_id}: {e}")
+            logger.error(f"RTP reception error for {stream_id}: {e}")
+            # Fallback to test pattern
+            logger.info(f"Falling back to test pattern for {stream_id}")
+            await self._generate_test_pattern_loop(stream_id)
+
+    def _forward_frame_to_ndi(self, stream_id: str, frame: np.ndarray):
+        """Forward received frame to NDI pipeline"""
+        if self.on_frame_received:
+            self.on_frame_received(stream_id, frame)
     
     def _generate_test_pattern(self, stream_id: str, frame_number: int) -> np.ndarray:
         """
@@ -264,21 +238,73 @@ class WebRTCConsumer:
         
         return img
     
+    def _generate_simple_test_pattern(self, stream_id: str, frame_number: int) -> np.ndarray:
+        """
+        Generate a simple test pattern frame without OpenCV dependency
+        
+        Args:
+            stream_id: Stream identifier
+            frame_number: Frame number
+            
+        Returns:
+            np.ndarray: Test pattern image in BGR format
+        """
+        # Create test pattern using only numpy
+        width, height = 1280, 720
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Add moving elements using simple math
+        center_x = width // 2
+        center_y = height // 2
+        
+        # Moving circle (green)
+        circle_x = int(center_x + 200 * np.sin(frame_number * 0.1))
+        circle_y = int(center_y + 100 * np.cos(frame_number * 0.1))
+        
+        # Draw circle using numpy operations
+        y, x = np.ogrid[:height, :width]
+        mask = (x - circle_x)**2 + (y - circle_y)**2 <= 50**2
+        img[mask] = [0, 255, 0]  # Green circle
+        
+        # Add some color bars
+        bar_width = width // 8
+        colors = [
+            [255, 0, 0],    # Red
+            [0, 255, 0],    # Green
+            [0, 0, 255],    # Blue
+            [255, 255, 0],  # Yellow
+            [255, 0, 255],  # Magenta
+            [0, 255, 255],  # Cyan
+            [255, 255, 255], # White
+            [128, 128, 128] # Gray
+        ]
+        
+        for i, color in enumerate(colors):
+            start_x = i * bar_width
+            end_x = min((i + 1) * bar_width, width)
+            img[height//2-20:height//2+20, start_x:end_x] = color
+        
+        # Add frame counter as a simple pattern
+        counter_pattern = (frame_number % 10) * 25
+        img[50:70, 50:50+counter_pattern] = [255, 255, 255]
+        
+        return img
+    
     async def _generate_test_pattern_loop(self, stream_id: str):
         """
-        Generate test pattern frames in a loop to demonstrate the pipeline
+        Generate simple test pattern frames without OpenCV dependency
         
         Args:
             stream_id: Stream identifier
         """
         try:
-            logger.info(f"Starting test pattern generation for {stream_id}")
+            logger.info(f"Starting simple test pattern generation for {stream_id}")
             frame_count = 0
             
             while stream_id in self.consumers:
                 try:
-                    # Generate test pattern frame
-                    img = self._generate_test_pattern(stream_id, frame_count)
+                    # Generate simple test pattern frame (no OpenCV needed)
+                    img = self._generate_simple_test_pattern(stream_id, frame_count)
                     
                     # Send frame to NDI pipeline
                     if self.on_frame_received:
@@ -314,6 +340,12 @@ class WebRTCConsumer:
         """
         try:
             if stream_id in self.consumers:
+                # Stop RTP receiver if exists
+                rtp_receivers = getattr(self, 'rtp_receivers', {})
+                if stream_id in rtp_receivers:
+                    await rtp_receivers[stream_id].stop()
+                    del rtp_receivers[stream_id]
+                
                 # Remove consumer
                 del self.consumers[stream_id]
                 

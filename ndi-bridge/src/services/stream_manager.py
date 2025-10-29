@@ -7,7 +7,7 @@ import logging
 from typing import Dict, Optional, Callable, Any
 from datetime import datetime
 
-from ndi.ffmpeg_sender import FFmpegNDISender
+from ndi.ndi_manager import NDIManager
 from webrtc.consumer import WebRTCConsumer
 from webrtc.signaling import WebRTCSignaling
 from processing.pipeline import StreamPipeline
@@ -92,6 +92,9 @@ class StreamManager:
             # Get initial active producers
             await self._discover_existing_streams()
             
+            # Start health monitoring task
+            asyncio.create_task(self.monitor_stream_health())
+            
             logger.info("Stream Manager initialized successfully")
             return True
             
@@ -119,7 +122,7 @@ class StreamManager:
     
     async def start_stream(self, stream_info: dict) -> bool:
         """
-        Start a new stream
+        Start stream with real RTP reception and NDI output
         
         Args:
             stream_info: Stream information from backend
@@ -134,62 +137,84 @@ class StreamManager:
             resolution = stream_info.get("resolution", {"width": 1280, "height": 720})
             
             if not stream_id or not producer_id:
-                logger.error("Invalid stream info: missing stream_id or producer_id")
+                logger.error("Invalid stream info: missing IDs")
                 return False
             
             if stream_id in self.active_streams:
                 logger.warning(f"Stream {stream_id} already active")
                 return True
             
-            # Create FFmpeg NDI sender
-            ndi_source_name = f"{self.ndi_source_prefix}_{device_name}"
-            ndi_sender = FFmpegNDISender(
-                source_name=ndi_source_name,
-                width=resolution.get("width", 1280),
-                height=resolution.get("height", 720),
-                fps=30,
-                port=5004 + len(self.active_streams)  # Use different ports for different streams
-            )
+            logger.info(f"🚀 Starting stream {stream_id} ({device_name})")
             
-            # Initialize NDI sender
-            if not await ndi_sender.initialize():
-                logger.error(f"Failed to initialize NDI sender for {stream_id}")
-                return False
-            
-            # Create stream pipeline
-            pipeline = StreamPipeline(stream_id, ndi_sender)
-            await pipeline.start()
-            
-            # Get RTP capabilities
+            # Get RTP capabilities from backend
             rtp_capabilities = await self.signaling.request_rtp_capabilities()
             if not rtp_capabilities:
                 logger.error("Failed to get RTP capabilities")
-                await ndi_sender.close()
                 return False
             
-            # Start consuming WebRTC stream
-            if not await self.webrtc_consumer.consume_stream(stream_id, producer_id, rtp_capabilities):
-                logger.error(f"Failed to consume WebRTC stream {stream_id}")
+            # Request PlainTransport and consumer from backend
+            response = await self.signaling.sio.call('ndi-bridge-consume-stream', {
+                "stream_id": stream_id,
+                "producer_id": producer_id,
+                "rtp_capabilities": rtp_capabilities
+            })
+            
+            if not response.get('success'):
+                logger.error(f"Failed to consume stream: {response.get('error')}")
+                return False
+            
+            # Extract transport and RTP details
+            transport_info = response.get('transport', {})
+            rtp_parameters = response.get('rtp_parameters', {})
+            stream_metadata = response.get('stream_metadata', {})
+            
+            # Create NDI Manager with intelligent fallback
+            ndi_source_name = f"{self.ndi_source_prefix}_{device_name}"
+            ndi_manager = NDIManager(
+                source_name=ndi_source_name,
+                width=stream_metadata.get('width', 1280),
+                height=stream_metadata.get('height', 720),
+                fps=stream_metadata.get('fps', 30)
+            )
+            
+            # Initialize NDI output
+            if not await ndi_manager.initialize():
+                logger.error(f"Failed to initialize NDI for {stream_id}")
+                return False
+            
+            # Create processing pipeline
+            pipeline = StreamPipeline(stream_id, ndi_manager)
+            await pipeline.start()
+            
+            # Start RTP reception with aiortc (with GStreamer fallback)
+            if not await self.webrtc_consumer.consume_stream(
+                stream_id, 
+                producer_id, 
+                transport_info,
+                rtp_parameters
+            ):
+                logger.error(f"Failed to start RTP reception for {stream_id}")
                 await pipeline.stop()
-                await ndi_sender.close()
+                await ndi_manager.stop()
                 return False
             
-            # Store stream info
+            # Store stream components
             self.active_streams[stream_id] = {
                 "stream_info": stream_info,
-                "ndi_sender": ndi_sender,
+                "ndi_manager": ndi_manager,
                 "pipeline": pipeline,
+                "transport_info": transport_info,
                 "started_at": datetime.now()
             }
             
-            self.ndi_senders[stream_id] = ndi_sender
+            self.ndi_senders[stream_id] = ndi_manager
             self.pipelines[stream_id] = pipeline
             
             # Update statistics
             self.stats["total_streams_created"] += 1
             self.stats["active_streams"] = len(self.active_streams)
             
-            logger.info(f"Started stream {stream_id} -> {ndi_source_name}")
+            logger.info(f"✅ Stream {stream_id} started successfully -> {ndi_source_name}")
             
             if self.on_stream_started:
                 self.on_stream_started(stream_id, stream_info)
@@ -310,6 +335,56 @@ class StreamManager:
         except Exception as e:
             logger.error(f"Failed to get all stats: {e}")
             return {"error": str(e)}
+    
+    async def monitor_stream_health(self):
+        """
+        Background task to monitor stream health
+        Automatically restarts failed streams
+        """
+        while True:
+            try:
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                for stream_id, stream_data in list(self.active_streams.items()):
+                    ndi_manager = stream_data.get("ndi_manager")
+                    
+                    if ndi_manager:
+                        health = ndi_manager.get_stats()
+                        
+                        if not health.get('healthy', False):
+                            logger.warning(f"⚠️ Stream {stream_id} unhealthy, attempting restart")
+                            # Attempt automatic recovery
+                            await self.restart_stream(stream_id)
+                            
+            except Exception as e:
+                logger.error(f"Error in health monitor: {e}")
+
+    async def restart_stream(self, stream_id: str) -> bool:
+        """
+        Restart a failed stream
+        
+        Args:
+            stream_id: Stream ID to restart
+            
+        Returns:
+            bool: True if restart successful
+        """
+        logger.info(f"🔄 Restarting stream {stream_id}")
+        
+        stream_data = self.active_streams.get(stream_id)
+        if not stream_data:
+            return False
+        
+        stream_info = stream_data["stream_info"]
+        
+        # Stop current stream
+        await self.stop_stream(stream_id)
+        
+        # Wait briefly
+        await asyncio.sleep(1)
+        
+        # Restart
+        return await self.start_stream(stream_info)
     
     async def _discover_existing_streams(self):
         """

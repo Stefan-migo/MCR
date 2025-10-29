@@ -39,6 +39,7 @@ export class WebRTCClient {
 
   async connect(): Promise<void> {
     try {
+      
       this.onConnectionStateChange?.('connecting');
 
       // Initialize mediasoup device
@@ -57,23 +58,39 @@ export class WebRTCClient {
       if (typeof window !== 'undefined' && !localStorage.getItem('mcr_device_id')) {
         localStorage.setItem('mcr_device_id', deviceId);
       }
-      await new Promise<void>((resolve) => {
-        this.socket!.emit('register-device', { deviceId }, () => resolve());
+      // Add timeout to prevent hanging
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Device registration timeout'));
+        }, 10000);
+        
+        this.socket!.emit('register-device', { deviceId }, () => {
+          clearTimeout(timeout);
+          resolve();
+        });
       });
 
       // Get router RTP capabilities
-      const response = await fetch(`${this.config.serverUrl}/api/rtp-capabilities`);
+      const httpUrl = this.config.serverUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+      (window as any).debugLogger?.addLog('info', '🌐 Fetching RTP capabilities', httpUrl);
+      const response = await fetch(`${httpUrl}/api/rtp-capabilities`);
       const { rtpCapabilities } = await response.json();
+      (window as any).debugLogger?.addLog('success', '✅ RTP capabilities received');
 
       // Load device with router capabilities
+      (window as any).debugLogger?.addLog('info', '📱 Loading mediasoup device...');
       await this.device.load({ routerRtpCapabilities: rtpCapabilities });
 
       // Create send transport
+      (window as any).debugLogger?.addLog('info', '🚀 Creating send transport...');
       await this.createSendTransport();
 
       this.isConnected = true;
+      (window as any).debugLogger?.addLog('success', '✅ WebRTC Client connected successfully');
       this.onConnectionStateChange?.('connected');
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      (window as any).debugLogger?.addLog('error', '❌ WebRTC Client connection failed', errorMessage);
       this.onConnectionStateChange?.('error');
       this.onError?.(error as Error);
       throw error;
@@ -190,16 +207,16 @@ export class WebRTCClient {
     if (!this.socket) return;
 
     this.socket.on('connect', () => {
-      console.log('Socket connected');
+      (window as any).debugLogger?.addLog('success', '✅ Socket connected to server');
     });
 
     this.socket.on('disconnect', () => {
-      console.log('Socket disconnected');
+      (window as any).debugLogger?.addLog('warn', '⚠️ Socket disconnected from server');
       this.onConnectionStateChange?.('disconnected');
     });
 
     this.socket.on('error', (error: Error) => {
-      console.error('Socket error:', error);
+      (window as any).debugLogger?.addLog('error', '❌ Socket error', error.message);
       this.onError?.(error);
     });
   }

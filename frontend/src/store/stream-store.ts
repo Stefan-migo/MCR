@@ -58,7 +58,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   showControls: true,
   isFullscreen: false,
   error: null,
-  serverUrl: process.env.NEXT_PUBLIC_API_URL || 'https://192.168.100.19:3001',
+  serverUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001',
   enableAudio: true,
   enableVideo: true,
 
@@ -265,10 +265,17 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
       set({ error: null });
 
-      const newStream = await cameraService.toggleCamera();
+      await cameraService.toggleCamera();
+      
+      // Get the new stream from camera service
+      const newStream = cameraService.getCurrentStream();
+      
+      if (!newStream) {
+        throw new Error('Failed to get new stream after camera toggle');
+      }
       
       // If streaming, update the WebRTC stream
-      if (webrtcClient && webrtcClient.isStreaming && currentStream) {
+      if (webrtcClient && webrtcClient.streaming && currentStream) {
         await webrtcClient.stopStream();
         await webrtcClient.startStream(newStream);
       }
@@ -282,7 +289,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     }
   },
 
-  setQualityPreset: async (preset: CameraQualityPreset) => {
+  changeQuality: async (preset: CameraQualityPreset) => {
     try {
       const { cameraService, webrtcClient, currentStream } = get();
       
@@ -292,10 +299,17 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
       set({ error: null, selectedQualityPreset: preset });
 
-      const newStream = await cameraService.changeQualityPreset(preset);
+      await cameraService.changeQualityPreset(preset);
+      
+      // Get the new stream from camera service
+      const newStream = cameraService.getCurrentStream();
+      
+      if (!newStream) {
+        throw new Error('Failed to get new stream after quality change');
+      }
       
       // If streaming, update the WebRTC stream
-      if (webrtcClient && webrtcClient.isStreaming && currentStream) {
+      if (webrtcClient && webrtcClient.streaming && currentStream) {
         await webrtcClient.stopStream();
         await webrtcClient.startStream(newStream);
       }

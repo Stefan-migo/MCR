@@ -155,7 +155,7 @@ class FFmpegNDISender:
                 '-pix_fmt', 'bgr24',
                 '-r', str(self.fps),
                 '-i', raw_file,
-                '-c:v', 'libopenh264',
+                '-c:v', 'libx264',
                 '-preset', 'ultrafast',
                 '-crf', '18',
                 '-maxrate', '2M',
@@ -265,6 +265,55 @@ class FFmpegNDISender:
             "uptime": uptime,
             "is_initialized": self.is_initialized,
             "is_streaming": self.is_initialized and not self.stop_rotation,
+            "file_exists": os.path.exists(self.output_file)
+        }
+    
+    async def send_frame_with_retry(self, frame: np.ndarray, max_retries: int = 3) -> bool:
+        """
+        Send frame with automatic retry on failure
+        
+        Args:
+            frame: Video frame as numpy array
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            bool: True if frame sent successfully
+        """
+        for attempt in range(max_retries):
+            try:
+                if await self.send_frame(frame):
+                    return True
+                
+                logger.warning(f"Frame send failed, attempt {attempt + 1}/{max_retries}")
+                await asyncio.sleep(0.01)  # 10ms delay
+                
+            except Exception as e:
+                logger.error(f"Frame send error (attempt {attempt + 1}): {e}")
+                
+                if attempt < max_retries - 1:
+                    # Try to reinitialize FFmpeg sender
+                    logger.info("Attempting to reinitialize FFmpeg sender")
+                    if await self.initialize():
+                        continue
+        
+        return False
+
+    def check_health(self) -> dict:
+        """
+        Check FFmpeg sender health
+        
+        Returns:
+            dict: Health status information
+        """
+        current_time = time.time()
+        time_since_last_frame = current_time - self.last_frame_time if self.last_frame_time > 0 else 0
+        
+        return {
+            "healthy": self.is_initialized and time_since_last_frame < 5.0,
+            "time_since_last_frame": time_since_last_frame,
+            "frame_count": self.frame_count,
+            "is_initialized": self.is_initialized,
+            "method": "ffmpeg",
             "file_exists": os.path.exists(self.output_file)
         }
     

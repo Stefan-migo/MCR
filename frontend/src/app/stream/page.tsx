@@ -42,10 +42,22 @@ export default function StreamPage() {
   useEffect(() => {
     const initialize = async () => {
       try {
+        (window as any).debugLogger?.addLog('info', '🚀 Starting mobile camera initialization...');
+        (window as any).debugLogger?.addLog('info', '📱 User Agent', navigator.userAgent);
+        (window as any).debugLogger?.addLog('info', '🔒 Protocol', location.protocol);
+        (window as any).debugLogger?.addLog('info', '🌐 Host', location.host);
+        
         await initializeServices();
         setIsInitialized(true);
+        (window as any).debugLogger?.addLog('success', '✅ Mobile camera initialization successful');
       } catch (error) {
-        console.error('Failed to initialize services:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        (window as any).debugLogger?.addLog('error', '❌ Failed to initialize services', errorMessage);
+        (window as any).debugLogger?.addLog('error', 'Error details', {
+          name: error instanceof Error ? error.name : 'Unknown',
+          message: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined
+        });
       }
     };
 

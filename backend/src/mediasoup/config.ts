@@ -75,9 +75,18 @@ export const mediasoupConfig = {
   },
 
   plainTransport: {
-    listenIp: '0.0.0.0',
-    rtcpMux: false,
-    comedia: true
+    listenIp: { 
+      ip: '0.0.0.0', 
+      announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1' 
+    },
+    rtcpMux: true,        // RTCP and RTP on same port (recommended)
+    comedia: true,        // Server learns client IP from first RTP packet
+    enableSrtp: false,    // Plain RTP (no encryption to NDI bridge)
+    enableSctp: false,    // No data channel needed
+    portRange: {
+      min: 20000,         // Dedicated range for NDI bridge
+      max: 20100          // 100 ports = 50 potential streams (rtcpMux=true)
+    }
   }
 };
 

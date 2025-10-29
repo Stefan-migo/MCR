@@ -21,15 +21,63 @@ const httpServer: HttpServer = createServer(app);
 let httpsServer: HttpServer | HttpsServer;
 let useHttps = false;
 
-try {
-  const httpsOptions = {
-    key: fs.readFileSync(path.join(__dirname, '../../frontend/key.pem')),
-    cert: fs.readFileSync(path.join(__dirname, '../../frontend/cert.pem')),
-  };
-  httpsServer = createHttpsServer(httpsOptions, app);
-  useHttps = true;
-  console.log('🔒 HTTPS server created');
-} catch (error) {
+// Try multiple certificate paths (Docker: /app, Local: ./backend, Root: ./)
+const certPaths = [
+  '/app/cert.pem',  // Docker path
+  path.join(__dirname, '../../cert.pem'),  // Root directory
+  path.join(__dirname, '../cert.pem'),  // Backend directory
+  './cert.pem'  // Current directory
+];
+
+const keyPaths = [
+  '/app/key.pem',  // Docker path
+  path.join(__dirname, '../../key.pem'),  // Root directory
+  path.join(__dirname, '../key.pem'),  // Backend directory
+  './key.pem'  // Current directory
+];
+
+let certPath: string | null = null;
+let keyPath: string | null = null;
+
+// Find existing certificates
+for (const cp of certPaths) {
+  if (fs.existsSync(cp)) {
+    certPath = cp;
+    break;
+  }
+}
+
+for (const kp of keyPaths) {
+  if (fs.existsSync(kp)) {
+    keyPath = kp;
+    break;
+  }
+}
+
+console.log(`Checking certificates...`);
+console.log(`Cert path: ${certPath || 'not found'}`);
+console.log(`Key path: ${keyPath || 'not found'}`);
+
+if (certPath && keyPath) {
+  try {
+    const httpsOptions = {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+    };
+    httpsServer = createHttpsServer(httpsOptions, app);
+    useHttps = true;
+    console.log(`🔒 HTTPS server created with certificates`);
+    console.log(`   Cert: ${certPath}`);
+    console.log(`   Key: ${keyPath}`);
+  } catch (error) {
+    console.log('⚠️ HTTPS server creation failed, using HTTP');
+    if (error instanceof Error) {
+      console.log(`HTTPS error: ${error.message}`);
+    }
+    httpsServer = httpServer;
+    useHttps = false;
+  }
+} else {
   console.log('⚠️ HTTPS certificates not found, using HTTP');
   httpsServer = httpServer;
   useHttps = false;
@@ -44,7 +92,10 @@ const io = new Server(serverToUse, {
       `${protocol}://localhost:3000`,
       `${protocol}://192.168.100.19:3000`,
       `${protocol}://127.0.0.1:3000`,
-      `${protocol}://0.0.0.0:3000`
+      `${protocol}://0.0.0.0:3000`,
+      `https://0.0.0.0:3000`,
+      `https://localhost:3000`,
+      `https://192.168.100.19:3000`
     ],
     methods: ['GET', 'POST'],
   },
@@ -59,7 +110,10 @@ app.use(cors({
     `${protocol}://localhost:3000`,
     `${protocol}://192.168.100.19:3000`,
     `${protocol}://127.0.0.1:3000`,
-    `${protocol}://0.0.0.0:3000`
+    `${protocol}://0.0.0.0:3000`,
+    `https://0.0.0.0:3000`,
+    `https://localhost:3000`,
+    `https://192.168.100.19:3000`
   ],
   credentials: true
 }));
@@ -88,6 +142,27 @@ app.get('/api/rtp-capabilities', (req, res) => {
   }
 });
 
+// PlainTransport monitoring endpoints
+app.get('/api/plain-transports', (req, res) => {
+  try {
+    const transports = mediasoupRouter.getPlainTransports();
+    res.json({
+      count: transports.length,
+      transports: transports.map(t => ({
+        id: t.transport.id,
+        streamId: t.streamId,
+        producerId: t.producerId,
+        ip: t.transport.tuple.localIp,
+        port: t.transport.tuple.localPort,
+        rtcpPort: t.transport.rtcpTuple?.localPort,
+        createdAt: t.createdAt
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get PlainTransports' });
+  }
+});
+
 // In-memory device registry
 type DeviceInfo = {
   deviceId: string;
@@ -109,8 +184,10 @@ io.on('connection', (socket) => {
   // WebRTC signaling events
   socket.on('register-device', (data: { deviceId: string; deviceName?: string }, callback?: (resp: any) => void) => {
     try {
+      console.log('📱 Register device request:', data);
       const { deviceId, deviceName } = data || ({} as any);
       if (!deviceId) {
+        console.log('❌ Register device failed: deviceId required');
         callback?.({ error: 'deviceId is required' });
         return;
       }
@@ -133,6 +210,7 @@ io.on('connection', (socket) => {
 
       devices.set(deviceId, info);
       io.emit('device-connected', { deviceId, deviceName: info.deviceName });
+      console.log('✅ Device registered successfully:', deviceId);
       callback?.({ success: true });
     } catch (e) {
       callback?.({ error: 'failed to register device' });
@@ -336,42 +414,55 @@ io.on('connection', (socket) => {
     try {
       const { stream_id, producer_id, rtp_capabilities } = data;
       
-      // Get the producer
+      console.log(`🎬 NDI Bridge requesting stream: ${stream_id} (producer: ${producer_id})`);
+      
+      // Validate producer exists
       const producer = mediasoupRouter.getProducer(producer_id);
       if (!producer) {
-        callback({ error: 'Producer not found' });
-        return;
+        return callback({ 
+          success: false, 
+          error: `Producer ${producer_id} not found` 
+        });
       }
       
-      // Create PlainTransport for NDI bridge
-      const plainTransport = await mediasoupRouter.createPlainTransport({
-        listenIp: { ip: '0.0.0.0', announcedIp: '192.168.100.19' },
-        rtcpMux: false,
-        comedia: true
-      });
+      // Create dedicated PlainTransport for this stream
+      const { transport, tuple, rtcpTuple } = 
+        await mediasoupRouter.createPlainTransportForStream(stream_id, producer_id);
       
-      // Create consumer on the plain transport
+      // Create consumer on PlainTransport
       const consumer = await mediasoupRouter.createConsumer(
-        plainTransport.id,
+        transport.id,
         producer_id,
         rtp_capabilities
       );
+      
+      // Extract stream metadata
+      const streamInfo = mediasoupRouter.getStreamByProducerId(producer_id);
       
       callback({
         success: true,
         consumer_id: consumer.id,
         transport: {
-          ip: '192.168.100.19',
-          port: plainTransport.tuple.localPort,
-          rtcpPort: plainTransport.rtcpTuple?.localPort
+          id: transport.id,
+          ip: tuple.ip,
+          port: tuple.port,
+          rtcpPort: rtcpTuple?.port,
+          protocol: 'udp'
         },
-        rtp_parameters: consumer.rtpParameters
+        rtp_parameters: consumer.rtpParameters,
+        stream_metadata: {
+          width: streamInfo?.resolution.width || 1280,
+          height: streamInfo?.resolution.height || 720,
+          fps: streamInfo?.fps || 30,
+          device_name: streamInfo?.deviceName || 'Unknown'
+        }
       });
       
-      console.log(`🎬 NDI Bridge consuming stream: ${stream_id} -> ${producer_id} via PlainTransport ${plainTransport.id}`);
+      console.log(`✅ PlainTransport created: ${tuple.ip}:${tuple.port} for ${stream_id}`);
+      
     } catch (error) {
-      console.error('Failed to create consumer for NDI Bridge:', error);
-      callback({ error: 'Failed to create consumer' });
+      console.error('❌ Error creating NDI bridge consumer:', error);
+      callback({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -398,6 +489,12 @@ io.on('connection', (socket) => {
       }, 30000);
     }
   });
+});
+
+// Cleanup handler for closed producers
+io.on('producer-close', async (producerId: string) => {
+  // Find and close associated PlainTransport
+  await mediasoupRouter.closePlainTransportForProducer(producerId);
 });
 
 // Start server

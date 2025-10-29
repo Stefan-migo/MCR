@@ -35,9 +35,8 @@ export default function DashboardPage() {
         // Add a small delay to ensure backend is ready
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Use correct IP address for backend connection
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const serverUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://192.168.100.19:3001';
+        // Use environment variable for backend connection
+        const serverUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001';
         
         console.log('🚀 Initializing dashboard service with URL:', serverUrl);
         await initializeService(serverUrl);
