@@ -118,8 +118,8 @@ class Settings(BaseSettings):
     )
     
     class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+        # env_file = ".env"  # Temporarily disabled due to encoding issue
+        # env_file_encoding = "utf-8"
         case_sensitive = False
         
         # Environment variable mappings
@@ -225,11 +225,42 @@ class Settings(BaseSettings):
         try:
             import ctypes
             import os
-            # Try to load the NDI library directly
-            ndi_lib_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'NDI SDK for Linux', 'lib', 'x86_64-linux-gnu', 'libndi.so.5.6.1')
-            if os.path.exists(ndi_lib_path):
-                lib = ctypes.CDLL(ndi_lib_path)
-                return True
+            import platform
+            
+            # Check for Windows NDI SDK
+            if platform.system() == "Windows":
+                # Common Windows NDI SDK paths
+                possible_paths = [
+                    r"C:\Program Files\NewTek\NDI 6 SDK\bin\x64\Processing.NDI.Lib.x64.dll",
+                    r"C:\Program Files (x86)\NewTek\NDI 6 SDK\bin\x64\Processing.NDI.Lib.x64.dll",
+                    r"C:\Program Files\NewTek\NDI 5 SDK\bin\x64\Processing.NDI.Lib.x64.dll",
+                    r"C:\Program Files (x86)\NewTek\NDI 5 SDK\bin\x64\Processing.NDI.Lib.x64.dll",
+                    r"C:\Program Files\NewTek\NDI 4 SDK\bin\x64\Processing.NDI.Lib.x64.dll",
+                    r"C:\Program Files (x86)\NewTek\NDI 4 SDK\bin\x64\Processing.NDI.Lib.x64.dll"
+                ]
+                
+                for ndi_lib_path in possible_paths:
+                    if os.path.exists(ndi_lib_path):
+                        try:
+                            lib = ctypes.CDLL(ndi_lib_path)
+                            return True
+                        except Exception:
+                            continue
+                            
+                # Also try to import ndi-python if available
+                try:
+                    import ndi
+                    return True
+                except ImportError:
+                    pass
+                    
+            # Linux fallback (original code)
+            else:
+                ndi_lib_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'NDI SDK for Linux', 'lib', 'x86_64-linux-gnu', 'libndi.so.5.6.1')
+                if os.path.exists(ndi_lib_path):
+                    lib = ctypes.CDLL(ndi_lib_path)
+                    return True
+                    
             return False
         except Exception:
             return False

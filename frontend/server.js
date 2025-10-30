@@ -58,6 +58,6 @@ app.prepare().then(() => {
     })
     .listen(port, hostname, () => {
       console.log(`> Ready on ${protocol}://${hostname}:${port}`);
-      console.log(`> Mobile access: ${protocol}://192.168.100.19:${port}`);
+      console.log(`> Mobile access: ${protocol}://192.168.100.11:${port}`);
     });
 });

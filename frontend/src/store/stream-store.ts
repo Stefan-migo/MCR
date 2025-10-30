@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { WebRTCClient, WebRTCClientConfig, StreamStats } from '../lib/webrtc-client';
+import { getBackendWsUrl } from '../lib/url';
 import { CameraService, CameraConstraints, CameraQualityPreset } from '../lib/camera-service';
 
 export interface StreamState {
@@ -58,7 +59,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   showControls: true,
   isFullscreen: false,
   error: null,
-  serverUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001',
+  serverUrl: process.env.NEXT_PUBLIC_WS_URL || getBackendWsUrl(),
   enableAudio: true,
   enableVideo: true,
 

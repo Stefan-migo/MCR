@@ -175,7 +175,16 @@ export class MediasoupRouter {
       throw new Error('Router not initialized');
     }
 
-    const transport = this.transports.get(transportId);
+    // Check both WebRTC and Plain transports
+    let transport = this.transports.get(transportId);
+    if (!transport) {
+      // Check plain transports
+      const plainTransportInfo = this.plainTransports.get(transportId);
+      if (plainTransportInfo) {
+        transport = plainTransportInfo.transport;
+      }
+    }
+    
     if (!transport) {
       throw new Error('Transport not found');
     }

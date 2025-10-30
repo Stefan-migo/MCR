@@ -47,6 +47,8 @@
     "resolume"
   ],
   "author": "",
-  "license": "TBD"
+  "license": "TBD",
+  "dependencies": {
+    "mediasoup": "^3.19.6"
+  }
 }
-

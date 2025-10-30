@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { StreamCardProps } from '../../types/dashboard';
 import { useDashboardStore } from '../../store/dashboard-store';
+import StreamPreview from './StreamPreview';
 
 export default function StreamCard({ 
   stream, 
@@ -69,22 +70,8 @@ export default function StreamCard({
     >
       {/* Video Preview */}
       <div className="relative aspect-video bg-gray-900">
-        {isStreaming && device?.streamId ? (
-          <video
-            ref={(video) => {
-              if (video && device?.streamId) {
-                // Video stream will be handled by the WebRTC client
-                // This is just a placeholder for now
-              }
-            }}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover"
-            style={{
-              transform: 'scaleX(-1)', // Mirror the video for selfie mode
-            }}
-          />
+        {stream.producerId ? (
+          <StreamPreview producerId={stream.producerId} mirrored={true} />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center text-gray-500">
@@ -116,7 +103,6 @@ export default function StreamCard({
             </div>
           )}
         </div>
-        
         
         {/* Duration */}
         <div className="absolute top-2 right-2 bg-black bg-opacity-70 text-white text-xs px-2 py-1 rounded">

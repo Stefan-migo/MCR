@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class NDIMethod(Enum):
     NDI_PYTHON = "ndi-python"
+    NDI_CTYPES = "ndi-ctypes"
     FFMPEG = "ffmpeg"
     NONE = "none"
 
@@ -39,7 +40,13 @@ class NDIManager:
             logger.info(f"✅ Using ndi-python for {self.source_name}")
             return True
         
-        # Fall back to FFmpeg
+        # Try ctypes NDI SDK (recommended fallback)
+        if await self._try_ndi_ctypes():
+            self.method = NDIMethod.NDI_CTYPES
+            logger.info(f"✅ Using ndi-ctypes for {self.source_name}")
+            return True
+        
+        # Fall back to FFmpeg (last resort)
         if await self._try_ffmpeg():
             self.method = NDIMethod.FFMPEG
             logger.info(f"⚠️ Using FFmpeg fallback for {self.source_name}")
@@ -72,6 +79,32 @@ class NDIManager:
             return False
         except Exception as e:
             logger.error(f"ndi-python error: {e}")
+            return False
+    
+    async def _try_ndi_ctypes(self) -> bool:
+        """Try to initialize ndi-ctypes"""
+        try:
+            from ndi.ndi_ctypes_sender import NDICtypesSender
+            
+            self.sender = NDICtypesSender(
+                source_name=self.source_name,
+                width=self.width,
+                height=self.height,
+                fps=self.fps
+            )
+            
+            if await self.sender.initialize():
+                logger.info("ndi-ctypes initialized successfully")
+                return True
+            else:
+                logger.warning("ndi-ctypes initialization failed")
+                return False
+                
+        except ImportError as e:
+            logger.warning(f"ndi-ctypes not available: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"ndi-ctypes error: {e}")
             return False
     
     async def _try_ffmpeg(self) -> bool:
@@ -124,3 +157,12 @@ class NDIManager:
                 await self.sender.stop()
             elif hasattr(self.sender, 'close'):
                 self.sender.close()
+    
+    async def close(self):
+        """Close NDI sender"""
+        if self.sender:
+            if hasattr(self.sender, 'close'):
+                await self.sender.close()
+            elif hasattr(self.sender, 'destroy'):
+                self.sender.destroy()
+            self.sender = None

@@ -1,9 +1,37 @@
 import { types as mediasoupTypes } from 'mediasoup';
+import path from 'path';
+
+// Get the correct worker path for workspace setup
+const getWorkerPath = () => {
+  const isWindows = process.platform === 'win32';
+  const workerExecutable = isWindows ? 'mediasoup-worker.exe' : 'mediasoup-worker';
+  
+  // Try multiple possible paths for the mediasoup worker
+  const possiblePaths = [
+    path.join(__dirname, `../../../node_modules/mediasoup/worker/out/Release/${workerExecutable}`),
+    path.join(__dirname, `../../../../node_modules/mediasoup/worker/out/Release/${workerExecutable}`),
+    path.join(process.cwd(), `node_modules/mediasoup/worker/out/Release/${workerExecutable}`),
+    workerExecutable // fallback to default
+  ];
+  
+  for (const workerPath of possiblePaths) {
+    try {
+      require('fs').accessSync(workerPath, require('fs').constants.F_OK);
+      console.log(`✅ Found mediasoup worker at: ${workerPath}`);
+      return workerPath;
+    } catch (error) {
+      // Path doesn't exist, try next one
+    }
+  }
+  
+  console.log('⚠️ Using default mediasoup worker path');
+  return workerExecutable;
+};
 
 export const mediasoupConfig = {
   worker: {
     rtcMinPort: 10000,
-    rtcMaxPort: 10100,
+    rtcMaxPort: 12000,
     logLevel: 'warn' as const,
     logTags: [
       'info',
@@ -17,7 +45,8 @@ export const mediasoupConfig = {
       'score',
       'simulcast',
       'svc'
-    ]
+    ],
+    workerPath: getWorkerPath()
   } as mediasoupTypes.WorkerSettings,
 
   router: {
@@ -67,9 +96,12 @@ export const mediasoupConfig = {
     listenIps: [
       {
         ip: '0.0.0.0',
-        announcedIp: process.env.ANNOUNCED_IP || undefined
+        announcedIp: process.env.ANNOUNCED_IP || process.env.MEDIASOUP_ANNOUNCED_IP || undefined
       }
     ],
+    enableUdp: true,
+    enableTcp: true,
+    preferUdp: true,
     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000
   },
@@ -84,8 +116,8 @@ export const mediasoupConfig = {
     enableSrtp: false,    // Plain RTP (no encryption to NDI bridge)
     enableSctp: false,    // No data channel needed
     portRange: {
-      min: 20000,         // Dedicated range for NDI bridge
-      max: 20100          // 100 ports = 50 potential streams (rtcpMux=true)
+      min: 30000,         // Dedicated range for NDI bridge (expanded)
+      max: 31000          // 1000 ports ~ 500 streams (rtcpMux=true)
     }
   }
 };

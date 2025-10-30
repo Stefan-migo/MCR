@@ -3,6 +3,7 @@ WebRTC Consumer - Handles consuming WebRTC streams from Mediasoup backend
 """
 
 import asyncio
+import socket
 import logging
 import numpy as np
 from typing import Dict, Optional, Callable, Any
@@ -92,12 +93,22 @@ class WebRTCConsumer:
             if not self.is_connected:
                 logger.error("Not connected to backend")
                 return False
-            
-            # Request to consume stream via Socket.io
+            # Allocate a UDP port on loopback to bypass NIC/firewall quirks; advertise 127.0.0.1
+            advertise_ip = "127.0.0.1"
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.bind(("127.0.0.1", 0))
+                _bound_ip, receiver_port = s.getsockname()
+                receiver_ip = advertise_ip
+
+            logger.info(f"🧭 Using local RTP receiver at {receiver_ip}:{receiver_port} for {stream_id}")
+
+            # Request to consume stream via Socket.io (instruct backend to send RTP to our receiver)
             response = await self.signaling.sio.call('ndi-bridge-consume-stream', {
                 "stream_id": stream_id,
                 "producer_id": producer_id,
-                "rtp_capabilities": rtp_capabilities
+                "rtp_capabilities": rtp_capabilities,
+                "receiver_ip": receiver_ip,
+                "receiver_port": receiver_port
             })
             
             if not response.get('success'):
@@ -113,17 +124,19 @@ class WebRTCConsumer:
             logger.info(f"Transport info: {transport_info}")
             logger.info(f"RTP parameters: {rtp_parameters}")
             
-            # For PlainTransport, we need to receive RTP packets directly
+            # For PlainTransport, we receive RTP packets directly on our local UDP port
             # Store consumer info for RTP reception
             self.consumers[stream_id] = {
                 "consumer_id": consumer_id,
                 "rtp_parameters": rtp_parameters,
                 "producer_id": producer_id,
-                "transport_info": transport_info
+                "transport_info": transport_info,
+                "receiver_ip": receiver_ip,
+                "receiver_port": receiver_port
             }
             
             # Start RTP packet reception to get real mobile camera feed
-            asyncio.create_task(self._receive_rtp_packets(stream_id, transport_info, rtp_parameters))
+            asyncio.create_task(self._receive_rtp_packets(stream_id, rtp_parameters))
             
             logger.info(f"Started consuming stream: {stream_id}")
             return True
@@ -134,56 +147,40 @@ class WebRTCConsumer:
                 self.on_error(f"consume-{stream_id}", e)
             return False
     
-    async def _receive_rtp_packets(self, stream_id: str, transport_info: dict, rtp_parameters: dict):
+    async def _receive_rtp_packets(self, stream_id: str, rtp_parameters: dict):
         """
-        Receive real RTP packets from Mediasoup PlainTransport
+        Receive real RTP packets from Mediasoup PlainTransport using PyAV
         """
         try:
-            from webrtc.rtp_receiver import RTPReceiver
-            from webrtc.gstreamer_receiver import GStreamerRTPReceiver
+            from webrtc.pyav_rtp_receiver import UDPRTPReceiver
             
-            # Extract transport details
-            transport_ip = transport_info.get('ip')
-            transport_port = transport_info.get('port')
+            # Use loopback receiver endpoint (same host delivery)
+            consumer_info = self.consumers.get(stream_id, {})
+            transport_ip = "127.0.0.1"
+            transport_port = consumer_info.get('receiver_port')
             
-            logger.info(f"🎥 Starting real RTP reception for {stream_id}")
-            logger.info(f"📡 Transport: {transport_ip}:{transport_port}")
+            logger.info(f"🎥 Starting PyAV RTP reception for {stream_id}")
+            logger.info(f"📡 Listening for RTP on: {transport_ip}:{transport_port}")
             
-            # Try aiortc first
-            rtp_receiver = RTPReceiver(
+            # Create PyAV RTP receiver
+            rtp_receiver = UDPRTPReceiver(
                 stream_id=stream_id,
                 transport_ip=transport_ip,
                 transport_port=transport_port,
                 on_frame=lambda frame: self._forward_frame_to_ndi(stream_id, frame)
             )
             
-            # Start receiving with aiortc
-            if await rtp_receiver.start(rtp_parameters):
+            # Start receiving with PyAV
+            if await rtp_receiver.start():
                 # Store receiver for cleanup
                 self.rtp_receivers = getattr(self, 'rtp_receivers', {})
                 self.rtp_receivers[stream_id] = rtp_receiver
-                logger.info(f"✅ Real RTP reception started for {stream_id}")
+                logger.info(f"✅ PyAV RTP reception started for {stream_id}")
             else:
-                logger.warning(f"⚠️ aiortc failed for {stream_id}, trying GStreamer fallback")
-                
-                # Fallback to GStreamer
-                codec = rtp_parameters.get('codecs', [{}])[0].get('mimeType', 'video/VP8').split('/')[1]
-                gst_receiver = GStreamerRTPReceiver(
-                    stream_id=stream_id,
-                    transport_ip=transport_ip,
-                    transport_port=transport_port,
-                    codec=codec,
-                    on_frame=lambda frame: self._forward_frame_to_ndi(stream_id, frame)
-                )
-                
-                if await gst_receiver.start():
-                    self.rtp_receivers = getattr(self, 'rtp_receivers', {})
-                    self.rtp_receivers[stream_id] = gst_receiver
-                    logger.info(f"✅ GStreamer RTP reception started for {stream_id}")
-                else:
-                    logger.error(f"❌ Both aiortc and GStreamer failed for {stream_id}")
-                    # Fallback to test pattern
-                    await self._generate_test_pattern_loop(stream_id)
+                logger.error(f"❌ PyAV RTP receiver failed for {stream_id}")
+                # Fallback to test pattern
+                logger.info(f"Falling back to test pattern for {stream_id}")
+                await self._generate_test_pattern_loop(stream_id)
             
         except Exception as e:
             logger.error(f"RTP reception error for {stream_id}: {e}")

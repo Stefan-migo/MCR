@@ -90,12 +90,12 @@ const io = new Server(serverToUse, {
   cors: {
     origin: [
       `${protocol}://localhost:3000`,
-      `${protocol}://192.168.100.19:3000`,
+      `${protocol}://192.168.100.11:3000`,
       `${protocol}://127.0.0.1:3000`,
       `${protocol}://0.0.0.0:3000`,
       `https://0.0.0.0:3000`,
       `https://localhost:3000`,
-      `https://192.168.100.19:3000`
+      `https://192.168.100.11:3000`
     ],
     methods: ['GET', 'POST'],
   },
@@ -108,12 +108,12 @@ const mediasoupRouter = new MediasoupRouter();
 app.use(cors({
   origin: [
     `${protocol}://localhost:3000`,
-    `${protocol}://192.168.100.19:3000`,
+    `${protocol}://192.168.100.11:3000`,
     `${protocol}://127.0.0.1:3000`,
     `${protocol}://0.0.0.0:3000`,
     `https://0.0.0.0:3000`,
     `https://localhost:3000`,
-    `https://192.168.100.19:3000`
+    `https://192.168.100.11:3000`
   ],
   credentials: true
 }));
@@ -252,11 +252,14 @@ io.on('connection', (socket) => {
 
   socket.on('produce', async (data, callback) => {
     try {
+      console.log('🎬 Produce event received:', { kind: data.kind, transportId: data.transportId });
       const producer = await mediasoupRouter.createProducer(
         data.transportId,
         data.kind,
         data.rtpParameters
       );
+      
+      console.log('✅ Producer created:', { id: producer.id, kind: producer.kind });
       
       callback({
         id: producer.id,
@@ -265,6 +268,7 @@ io.on('connection', (socket) => {
 
       // Broadcast stream events to all dashboard clients
       if (data.kind === 'video') {
+        console.log('📹 Video producer detected, emitting stream-started event');
         const streams = mediasoupRouter.getActiveStreams();
         const stream = streams.find(s => s.producerId === producer.id);
         if (stream) {
@@ -344,6 +348,83 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Browser recv-only WebRTC (dashboard previews)
+  // Keep track of per-socket transports/consumers for cleanup
+  const socketRecvTransports: Set<string> = new Set();
+  const socketConsumers: Set<string> = new Set();
+
+  socket.on('get-rtp-capabilities', (callback) => {
+    try {
+      const caps = mediasoupRouter.getRouterCapabilities();
+      callback({ rtpCapabilities: caps });
+    } catch (error) {
+      callback({ error: 'Failed to get RTP capabilities' });
+    }
+  });
+
+  socket.on('create-recv-transport', async (data, callback) => {
+    try {
+      const transport = await mediasoupRouter.createWebRtcTransport();
+      // Tag transport with client id if available
+      (transport as any).appData = { ...(transport as any).appData, clientId: socket.id, role: 'recv' };
+      socketRecvTransports.add(transport.id);
+      callback({
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters
+      });
+    } catch (error) {
+      callback({ error: 'Failed to create recv transport' });
+    }
+  });
+
+  socket.on('connect-recv-transport', async (data, callback) => {
+    try {
+      const { transportId, dtlsParameters } = data || {};
+      const transport = mediasoupRouter.transports.get(transportId);
+      if (!transport || !('connect' in transport)) return callback({ error: 'Transport not found' });
+      await transport.connect({ dtlsParameters });
+      callback({ success: true });
+    } catch (error) {
+      callback({ error: 'Failed to connect recv transport' });
+    }
+  });
+
+  socket.on('consume-stream', async (data, callback) => {
+    try {
+      const { transportId, producerId, rtpCapabilities } = data || {};
+      if (!transportId || !producerId || !rtpCapabilities) {
+        return callback({ error: 'transportId, producerId and rtpCapabilities are required' });
+      }
+
+      const consumer = await mediasoupRouter.createConsumer(transportId, producerId, rtpCapabilities);
+      socketConsumers.add(consumer.id);
+
+      callback({
+        id: consumer.id,
+        kind: (consumer as any).kind,
+        rtpParameters: consumer.rtpParameters,
+        type: (consumer as any).type,
+        producerId
+      });
+    } catch (error: any) {
+      callback({ error: error?.message || 'Failed to consume stream' });
+    }
+  });
+
+  socket.on('resume-consumer', async (data, callback) => {
+    try {
+      const { consumerId } = data || {};
+      const consumer = mediasoupRouter.consumers.get(consumerId);
+      if (!consumer) return callback({ error: 'Consumer not found' });
+      await consumer.resume();
+      callback({ success: true });
+    } catch (error) {
+      callback({ error: 'Failed to resume consumer' });
+    }
+  });
+
   socket.on('update-stream-name', async (data, callback) => {
     try {
       const { streamId, name } = data;
@@ -389,7 +470,9 @@ io.on('connection', (socket) => {
 
   socket.on('ndi-bridge-request-streams', (data, callback) => {
     try {
+      console.log('🎬 NDI Bridge requesting streams...');
       const streams = mediasoupRouter.getActiveStreams();
+      console.log(`📊 Found ${streams.length} active streams`);
       const streamList = streams.map(stream => ({
         id: stream.id,
         producer_id: stream.producerId,
@@ -400,21 +483,27 @@ io.on('connection', (socket) => {
         created_at: stream.createdAt
       }));
       
+      console.log('📤 Sending streams to NDI Bridge:', streamList);
       callback({ 
         success: true, 
         streams: streamList,
         count: streamList.length 
       });
     } catch (error) {
+      console.error('❌ Error getting active streams:', error);
       callback({ error: 'Failed to get active streams' });
     }
   });
 
   socket.on('ndi-bridge-consume-stream', async (data, callback) => {
     try {
-      const { stream_id, producer_id, rtp_capabilities } = data;
+      const { stream_id, producer_id, rtp_capabilities, receiver_ip, receiver_port } = data;
       
       console.log(`🎬 NDI Bridge requesting stream: ${stream_id} (producer: ${producer_id})`);
+      console.log(`🔧 NDI Bridge RTP capabilities:`, JSON.stringify(rtp_capabilities, null, 2));
+      if (receiver_ip && receiver_port) {
+        console.log(`📥 NDI Bridge UDP receiver at ${receiver_ip}:${receiver_port}`);
+      }
       
       // Validate producer exists
       const producer = mediasoupRouter.getProducer(producer_id);
@@ -425,16 +514,22 @@ io.on('connection', (socket) => {
         });
       }
       
+      console.log(`🔧 Producer RTP parameters:`, JSON.stringify(producer.rtpParameters, null, 2));
+      
       // Create dedicated PlainTransport for this stream
       const { transport, tuple, rtcpTuple } = 
         await mediasoupRouter.createPlainTransportForStream(stream_id, producer_id);
-      
-      // Create consumer on PlainTransport
-      const consumer = await mediasoupRouter.createConsumer(
-        transport.id,
-        producer_id,
-        rtp_capabilities
-      );
+
+      // If the NDI bridge provided a UDP receiver endpoint, connect to it so mediasoup
+      // will send RTP directly to the bridge.
+      if (receiver_ip && receiver_port && 'connect' in transport) {
+        await (transport as any).connect({ ip: receiver_ip, port: receiver_port });
+        console.log(`🔗 Connected PlainTransport ${transport.id} to ${receiver_ip}:${receiver_port}`);
+      }
+
+      // Create consumer directly on the PlainTransport so mediasoup sends RTP out
+      const consumer = await mediasoupRouter.createConsumer(transport.id, producer_id, rtp_capabilities);
+      console.log(`🎧 Consumer created on PlainTransport: ${consumer.id}`);
       
       // Extract stream metadata
       const streamInfo = mediasoupRouter.getStreamByProducerId(producer_id);
@@ -468,6 +563,24 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
+
+    // Cleanup recv transports/consumers
+    try {
+      for (const consumerId of socketConsumers) {
+        const consumer = mediasoupRouter.consumers.get(consumerId);
+        if (consumer) {
+          try { consumer.close(); } catch {}
+          mediasoupRouter.consumers.delete(consumerId);
+        }
+      }
+      for (const transportId of socketRecvTransports) {
+        const transport = mediasoupRouter.transports.get(transportId);
+        if (transport) {
+          try { (transport as any).close?.(); } catch {}
+          mediasoupRouter.transports.delete(transportId);
+        }
+      }
+    } catch {}
 
     // Mark device disconnected and schedule removal in 30s if not streaming
     const deviceEntry = Array.from(devices.values()).find(d => d.socketId === socket.id);

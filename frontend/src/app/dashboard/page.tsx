@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { getBackendWsUrl } from '../../lib/url';
 import { useDashboardStore } from '../../store/dashboard-store';
 import ViewToggle from '../../components/dashboard/ViewToggle';
 import StreamGrid from '../../components/dashboard/StreamGrid';
@@ -35,8 +36,8 @@ export default function DashboardPage() {
         // Add a small delay to ensure backend is ready
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Use environment variable for backend connection
-        const serverUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001';
+        // Compute secure backend WS URL with env override
+        const serverUrl = process.env.NEXT_PUBLIC_WS_URL || getBackendWsUrl();
         
         console.log('🚀 Initializing dashboard service with URL:', serverUrl);
         await initializeService(serverUrl);

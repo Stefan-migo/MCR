@@ -21,7 +21,7 @@ from utils.logger import setup_production_logging
 from utils.metrics import start_metrics_server
 
 # Load environment variables
-load_dotenv()
+# load_dotenv()  # Temporarily disabled due to encoding issue
 
 # Get settings
 settings = get_settings()

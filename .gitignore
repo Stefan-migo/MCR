@@ -86,3 +86,31 @@ ROADMAP.md
 SETUP.md
 SUMMARY.md
 
+
+# Local certs/keys (do not commit)
+cert.pem
+key.pem
+backend/cert.pem
+backend/key.pem
+*.ts.temp
+*.log
+
+# Private certs/keys
+cert.pem
+key.pem
+backend/cert.pem
+backend/key.pem
+frontend/cert.pem
+frontend/key.pem
+
+# NDI SDK binaries
+NDI SDK for Linux/
+ndi-bridge/ndi-python/
+
+# Node/py caches
+**/node_modules/
+**/.next/
+**/.turbo/
+**/.cache/
+**/__pycache__/
+*.log

@@ -50,7 +50,7 @@ class WebRTCSignaling:
             bool: True if connection successful
         """
         try:
-            # Create Socket.io client with SSL verification disabled
+            # Create Socket.io client with SSL verification disabled for self-signed certs
             self.sio = socketio.AsyncClient(ssl_verify=False)
             
             # Set up event handlers
@@ -74,6 +74,25 @@ class WebRTCSignaling:
                 logger.error(f"Socket.io connection error: {data}")
                 if self.on_error:
                     self.on_error(str(data))
+            
+            # Set up message handlers for stream events
+            @self.sio.on('stream-started')
+            async def on_stream_started(data):
+                logger.info(f"📹 Stream started event received: {data}")
+                if "stream-started" in self.message_handlers:
+                    await self.message_handlers["stream-started"](data)
+            
+            @self.sio.on('stream-ended')
+            async def on_stream_ended(data):
+                logger.info(f"🛑 Stream ended event received: {data}")
+                if "stream-ended" in self.message_handlers:
+                    await self.message_handlers["stream-ended"](data)
+            
+            @self.sio.on('stream-stats')
+            async def on_stream_stats(data):
+                logger.debug(f"📊 Stream stats event received: {data}")
+                if "stream-stats" in self.message_handlers:
+                    await self.message_handlers["stream-stats"](data)
             
             # Connect to the backend
             await self.sio.connect(self.backend_url)
@@ -136,34 +155,127 @@ class WebRTCSignaling:
     
     async def request_rtp_capabilities(self) -> Optional[dict]:
         """
-        Request RTP capabilities from backend
+        Get consumer RTP capabilities for NDI bridge
         
         Returns:
-            dict: RTP capabilities or None if failed
+            dict: Consumer RTP capabilities
         """
         try:
-            import aiohttp
-            import ssl
+            # Return consumer RTP capabilities for NDI bridge
+            # These describe what the NDI bridge can receive, not what the backend can produce
+            rtp_capabilities = {
+                "codecs": [
+                    {
+                        "kind": "video",
+                        "mimeType": "video/VP8",
+                        "clockRate": 90000,
+                        "parameters": {},
+                        "rtcpFeedback": [
+                            {"type": "goog-remb"},
+                            {"type": "transport-cc"},
+                            {"type": "ccm", "parameter": "fir"},
+                            {"type": "nack"},
+                            {"type": "nack", "parameter": "pli"}
+                        ]
+                    },
+                    {
+                        "kind": "video",
+                        "mimeType": "video/H264",
+                        "clockRate": 90000,
+                        "parameters": {
+                            "packetization-mode": 1,
+                            "profile-level-id": "42e01f"
+                        },
+                        "rtcpFeedback": [
+                            {"type": "nack"},
+                            {"type": "nack", "parameter": "pli"},
+                            {"type": "ccm", "parameter": "fir"},
+                            {"type": "goog-remb"},
+                            {"type": "transport-cc"}
+                        ]
+                    },
+                    {
+                        "kind": "video",
+                        "mimeType": "video/rtx",
+                        "clockRate": 90000,
+                        "parameters": {
+                            "apt": 107
+                        },
+                        "rtcpFeedback": []
+                    },
+                    {
+                        "kind": "audio",
+                        "mimeType": "audio/opus",
+                        "clockRate": 48000,
+                        "channels": 2,
+                        "rtcpFeedback": [
+                            {"type": "transport-cc"}
+                        ]
+                    }
+                ],
+                "headerExtensions": [
+                    {
+                        "kind": "video",
+                        "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+                        "id": 9,
+                        "preferredId": 9
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+                        "id": 10,
+                        "preferredId": 10
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
+                        "id": 11,
+                        "preferredId": 11
+                    },
+                    {
+                        "kind": "video", 
+                        "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+                        "id": 2,
+                        "preferredId": 2
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+                        "id": 4,
+                        "preferredId": 4
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "urn:3gpp:video-orientation",
+                        "id": 3,
+                        "preferredId": 3
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "urn:ietf:params:rtp-hdrext:toffset",
+                        "id": 1,
+                        "preferredId": 1
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time",
+                        "id": 12,
+                        "preferredId": 12
+                    },
+                    {
+                        "kind": "video",
+                        "uri": "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay",
+                        "id": 5,
+                        "preferredId": 5
+                    }
+                ]
+            }
             
-            # Create SSL context that doesn't verify certificates
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            
-            # Get backend URL from signaling URL
-            backend_url = self.backend_url.replace('wss://', 'https://').replace('ws://', 'http://')
-            
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
-                async with session.get(f"{backend_url}/api/rtp-capabilities") as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get("rtpCapabilities")
-                    else:
-                        logger.error(f"Failed to get RTP capabilities: HTTP {response.status}")
-                        return None
+            logger.info(f"🔧 NDI Bridge RTP Capabilities: {rtp_capabilities}")
+            return rtp_capabilities
             
         except Exception as e:
-            logger.error(f"Failed to request RTP capabilities: {e}")
+            logger.error(f"Failed to create consumer RTP capabilities: {e}")
             return None
     
     async def create_plain_transport(self) -> Optional[dict]:
@@ -203,6 +315,9 @@ class WebRTCSignaling:
             dict: Consumer info or None if failed
         """
         try:
+            logger.info(f"🔧 Creating consumer for producer {producer_id}")
+            logger.info(f"🔧 Using RTP capabilities: {rtp_capabilities}")
+            
             message = {
                 "type": "create-consumer",
                 "data": {
@@ -213,6 +328,7 @@ class WebRTCSignaling:
             
             if await self.send_message(message):
                 response = await self._wait_for_response("consumer-created", timeout=5.0)
+                logger.info(f"🔧 Consumer creation response: {response}")
                 return response.get("data") if response else None
             
             return None
@@ -233,11 +349,16 @@ class WebRTCSignaling:
                 logger.error("Not connected to backend")
                 return None
             
+            logger.info("🔍 Requesting active streams from backend...")
             # Use the correct backend event for requesting streams
             response = await self.sio.call('ndi-bridge-request-streams', {})
             
+            logger.info(f"📡 Backend response: {response}")
+            
             if response and response.get('success'):
-                return response.get('streams', [])
+                streams = response.get('streams', [])
+                logger.info(f"✅ Found {len(streams)} active streams")
+                return streams
             else:
                 logger.error(f"Failed to get active streams: {response.get('error', 'Unknown error')}")
                 return None

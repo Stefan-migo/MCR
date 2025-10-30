@@ -4,6 +4,7 @@ Stream Manager - Manages multiple WebRTC streams and NDI outputs
 
 import asyncio
 import logging
+import time
 from typing import Dict, Optional, Callable, Any
 from datetime import datetime
 
@@ -146,27 +147,14 @@ class StreamManager:
             
             logger.info(f"🚀 Starting stream {stream_id} ({device_name})")
             
-            # Get RTP capabilities from backend
+            # Get RTP capabilities that this bridge can receive
             rtp_capabilities = await self.signaling.request_rtp_capabilities()
             if not rtp_capabilities:
                 logger.error("Failed to get RTP capabilities")
                 return False
-            
-            # Request PlainTransport and consumer from backend
-            response = await self.signaling.sio.call('ndi-bridge-consume-stream', {
-                "stream_id": stream_id,
-                "producer_id": producer_id,
-                "rtp_capabilities": rtp_capabilities
-            })
-            
-            if not response.get('success'):
-                logger.error(f"Failed to consume stream: {response.get('error')}")
-                return False
-            
-            # Extract transport and RTP details
-            transport_info = response.get('transport', {})
-            rtp_parameters = response.get('rtp_parameters', {})
-            stream_metadata = response.get('stream_metadata', {})
+
+            logger.info(f"🔧 Preparing NDI for stream {stream_id} (producer {producer_id})")
+            stream_metadata = stream_info.get('resolution', {"width": 1280, "height": 720})
             
             # Create NDI Manager with intelligent fallback
             ndi_source_name = f"{self.ndi_source_prefix}_{device_name}"
@@ -186,12 +174,12 @@ class StreamManager:
             pipeline = StreamPipeline(stream_id, ndi_manager)
             await pipeline.start()
             
-            # Start RTP reception with aiortc (with GStreamer fallback)
+            # Start RTP reception (this will request backend to create PlainTransport
+            # and connect it to our local UDP receiver)
             if not await self.webrtc_consumer.consume_stream(
-                stream_id, 
-                producer_id, 
-                transport_info,
-                rtp_parameters
+                stream_id,
+                producer_id,
+                rtp_capabilities
             ):
                 logger.error(f"Failed to start RTP reception for {stream_id}")
                 await pipeline.stop()
@@ -203,7 +191,7 @@ class StreamManager:
                 "stream_info": stream_info,
                 "ndi_manager": ndi_manager,
                 "pipeline": pipeline,
-                "transport_info": transport_info,
+                "transport_info": {},
                 "started_at": datetime.now()
             }
             
@@ -351,8 +339,14 @@ class StreamManager:
                     if ndi_manager:
                         health = ndi_manager.get_stats()
                         
-                        if not health.get('healthy', False):
-                            logger.warning(f"⚠️ Stream {stream_id} unhealthy, attempting restart")
+                        # Check if we're receiving frames (health indicator)
+                        frames_decoded = health.get('frames_decoded', 0)
+                        last_packet_time = health.get('last_packet_time', 0)
+                        current_time = time.time()
+                        
+                        # Consider stream unhealthy if no frames decoded in 30 seconds
+                        if frames_decoded == 0 and (current_time - last_packet_time) > 30:
+                            logger.warning(f"⚠️ Stream {stream_id} unhealthy (no frames in 30s), attempting restart")
                             # Attempt automatic recovery
                             await self.restart_stream(stream_id)
                             
