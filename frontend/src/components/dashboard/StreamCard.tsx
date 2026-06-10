@@ -61,12 +61,38 @@ export default function StreamCard({
     return 'bg-red-500';
   };
 
+  const handleOpenPopup = (e: React.MouseEvent) => {
+    try {
+      // Keep dashboard selection behavior
+      onSelect(stream.id);
+    } catch {}
+    // Open clean viewer popup using producerId (most direct consumer path)
+    const width = Math.max(320, stream.resolution?.width || 1280);
+    const height = Math.max(240, stream.resolution?.height || 720);
+    const features = [
+      'popup=yes',
+      'toolbar=no',
+      'menubar=no',
+      'location=no',
+      'status=no',
+      'scrollbars=no',
+      'resizable=yes',
+      `width=${width}`,
+      `height=${height}`,
+    ].join(',');
+    const producerId = (stream as any).producerId;
+    if (producerId) {
+      const url = `/viewer/${producerId}`;
+      window.open(url, `viewer-${producerId}`, features);
+    }
+  };
+
   return (
     <div 
       className={`bg-gray-800 rounded-lg overflow-hidden cursor-pointer transition-all hover:bg-gray-700 ${
         isSelected ? 'ring-2 ring-blue-500' : ''
       } ${!isConnected ? 'opacity-50' : ''} ${className}`}
-      onClick={() => onSelect(stream.id)}
+      onClick={handleOpenPopup}
     >
       {/* Video Preview */}
       <div className="relative aspect-video bg-gray-900">

@@ -3,7 +3,7 @@
 # Generate SSL certificates for HTTPS development
 # This script creates self-signed certificates for local network access
 
-IP_ADDRESS="${1:-192.168.100.19}"
+IP_ADDRESS="${1:-192.168.0.138}"
 
 echo "🔒 Generating SSL certificates for HTTPS..."
 echo "   IP Address: $IP_ADDRESS"

@@ -84,8 +84,8 @@ export default function Home() {
           
           <div className="text-center p-6 bg-black bg-opacity-20 rounded-lg">
             <div className="text-3xl mb-2">🔗</div>
-            <h3 className="font-semibold text-white mb-2">NDI Compatible</h3>
-            <p className="text-gray-300 text-sm">Direct integration with OBS and Resolume</p>
+            <h3 className="font-semibold text-white mb-2">OBS Compatible</h3>
+            <p className="text-gray-300 text-sm">Direct integration with OBS Browser Source</p>
           </div>
         </div>
 
@@ -121,7 +121,7 @@ export default function Home() {
               <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold">4</div>
               <div>
                 <p className="font-semibold text-white">Use in OBS</p>
-                <p className="text-gray-300 text-sm">Add NDI source to your software</p>
+                <p className="text-gray-300 text-sm">Add Browser Source to OBS Studio</p>
               </div>
             </div>
           </div>
@@ -134,7 +134,7 @@ export default function Home() {
             <span className="font-semibold">Phase 2.4: Admin Dashboard - Complete!</span>
           </div>
           <p className="text-gray-400 text-sm mt-2">
-            Mobile streaming and VJ dashboard are now fully functional. Ready for Phase 3: NDI Bridge.
+            Mobile streaming and VJ dashboard are now fully functional. Use OBS Browser Source to capture streams.
           </p>
         </div>
       </div>

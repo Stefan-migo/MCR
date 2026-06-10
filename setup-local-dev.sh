@@ -47,26 +47,6 @@ check_node() {
     print_success "Node.js $(node --version) found"
 }
 
-# Check if Python is installed
-check_python() {
-    if ! command -v python3 &> /dev/null; then
-        print_error "Python 3 is not installed. Please install Python 3.8+ first."
-        exit 1
-    fi
-    
-    PYTHON_VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2)
-    print_success "Python $PYTHON_VERSION found"
-}
-
-# Check if FFmpeg is installed
-check_ffmpeg() {
-    if ! command -v ffmpeg &> /dev/null; then
-        print_warning "FFmpeg is not installed. NDI bridge will use ndi-python only."
-        print_warning "To install FFmpeg: sudo apt install ffmpeg (Ubuntu/Debian) or brew install ffmpeg (macOS)"
-    else
-        print_success "FFmpeg $(ffmpeg -version | head -n1 | cut -d' ' -f3) found"
-    fi
-}
 
 # Generate SSL certificates for local development
 generate_certificates() {
@@ -75,7 +55,7 @@ generate_certificates() {
     if [ ! -f "key.pem" ] || [ ! -f "cert.pem" ]; then
         openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
             -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,DNS:127.0.0.1,IP:127.0.0.1,IP:192.168.100.19"
+            -addext "subjectAltName=DNS:localhost,DNS:127.0.0.1,IP:127.0.0.1,IP:192.168.0.138"
         print_success "SSL certificates generated"
     else
         print_success "SSL certificates already exist"
@@ -103,8 +83,8 @@ setup_backend() {
     cat > .env.local << EOF
 NODE_ENV=development
 PORT=3001
-MEDIASOUP_ANNOUNCED_IP=192.168.100.19
-CORS_ORIGIN=http://localhost:3000,https://localhost:3000,http://192.168.100.19:3000,https://192.168.100.19:3000
+MEDIASOUP_ANNOUNCED_IP=192.168.0.138
+CORS_ORIGIN=http://localhost:3000,https://localhost:3000,http://192.168.0.138:3000,https://192.168.0.138:3000
 EOF
     
     print_success "Backend setup complete"
@@ -131,45 +111,14 @@ setup_frontend() {
     # Create .env.local file for local development
     cat > .env.local << EOF
 NODE_ENV=development
-NEXT_PUBLIC_API_URL=https://192.168.100.19:3001
-NEXT_PUBLIC_WS_URL=wss://192.168.100.19:3001
+NEXT_PUBLIC_API_URL=https://192.168.0.138:3001
+NEXT_PUBLIC_WS_URL=wss://192.168.0.138:3001
 EOF
     
     print_success "Frontend setup complete"
     cd ..
 }
 
-# Setup NDI bridge
-setup_ndi_bridge() {
-    print_status "Setting up NDI bridge..."
-    
-    cd ndi-bridge
-    
-    # Create virtual environment if it doesn't exist
-    if [ ! -d "venv" ]; then
-        print_status "Creating Python virtual environment..."
-        python3 -m venv venv
-    fi
-    
-    # Activate virtual environment and install dependencies
-    print_status "Installing Python dependencies..."
-    source venv/bin/activate
-    pip install --upgrade pip
-    pip install -r requirements.txt
-    
-    # Create .env file for local development
-    cat > .env.local << EOF
-NDI_BRIDGE_HOST=0.0.0.0
-NDI_BRIDGE_PORT=8000
-BACKEND_URL=https://192.168.100.19:3001
-BACKEND_WS_URL=wss://192.168.100.19:3001
-LOG_LEVEL=DEBUG
-NDI_SOURCE_PREFIX=MobileCamera
-EOF
-    
-    print_success "NDI bridge setup complete"
-    cd ..
-}
 
 # Create start scripts
 create_start_scripts() {
@@ -193,16 +142,6 @@ npm run dev
 EOF
     chmod +x start-frontend.sh
     
-    # NDI bridge start script
-    cat > start-ndi-bridge.sh << 'EOF'
-#!/bin/bash
-cd ndi-bridge
-source venv/bin/activate
-export PYTHONPATH=$PWD/src:$PYTHONPATH
-python src/main.py
-EOF
-    chmod +x start-ndi-bridge.sh
-    
     # Start all script
     cat > start-all.sh << 'EOF'
 #!/bin/bash
@@ -217,32 +156,23 @@ BACKEND_PID=$!
 # Wait a bit for backend to start
 sleep 3
 
-# Start NDI bridge
-./start-ndi-bridge.sh &
-NDI_PID=$!
-
-# Wait a bit for NDI bridge to start
-sleep 3
-
 # Start frontend
 ./start-frontend.sh &
 FRONTEND_PID=$!
 
 echo "✅ All services started!"
 echo "Backend PID: $BACKEND_PID"
-echo "NDI Bridge PID: $NDI_PID"
 echo "Frontend PID: $FRONTEND_PID"
 echo ""
-echo "🌐 Frontend: https://192.168.100.19:3000"
-echo "🔧 Backend: https://192.168.100.19:3001"
-echo "📡 NDI Bridge: http://localhost:8000"
+echo "🌐 Frontend: https://192.168.0.138:3000"
+echo "🔧 Backend: https://192.168.0.138:3001"
 echo ""
 echo "Press Ctrl+C to stop all services"
 
 # Function to cleanup on exit
 cleanup() {
     echo "🛑 Stopping all services..."
-    kill $BACKEND_PID $NDI_PID $FRONTEND_PID 2>/dev/null
+    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
     exit 0
 }
 
@@ -261,12 +191,9 @@ main() {
     print_status "Starting local development setup..."
     
     check_node
-    check_python
-    check_ffmpeg
     generate_certificates
     setup_backend
     setup_frontend
-    setup_ndi_bridge
     create_start_scripts
     
     print_success "🎉 Local development setup complete!"
@@ -276,14 +203,12 @@ main() {
     echo "2. Or run services individually:"
     echo "   - Backend: ./start-backend.sh"
     echo "   - Frontend: ./start-frontend.sh"
-    echo "   - NDI Bridge: ./start-ndi-bridge.sh"
     echo ""
     echo "🌐 Access URLs:"
-    echo "   - Frontend: https://192.168.100.19:3000"
-    echo "   - Backend: https://192.168.100.19:3001"
-    echo "   - NDI Bridge: http://localhost:8000"
+    echo "   - Frontend: https://192.168.0.138:3000"
+    echo "   - Backend: https://192.168.0.138:3001"
     echo ""
-    echo "📱 Mobile access: https://192.168.100.19:3000"
+    echo "📱 Mobile access: https://192.168.0.138:3000"
     echo "   (Accept the self-signed certificate warning)"
 }
 

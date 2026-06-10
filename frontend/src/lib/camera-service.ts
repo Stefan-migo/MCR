@@ -70,7 +70,7 @@ export class CameraService {
         (window as any).debugLogger?.addLog('error', '❌ getUserMedia not supported');
         // Check if we're on HTTP (which blocks camera access on mobile)
         if (location.protocol === 'http:' && CameraService.isMobileDevice()) {
-          throw new Error('Camera access requires HTTPS on mobile devices. Please use https://192.168.100.19:3000 and accept the security certificate.');
+          throw new Error('Camera access requires HTTPS on mobile devices. Please use https://192.168.0.138:3000 and accept the security certificate.');
         }
         throw new Error('Camera access not supported in this browser');
       }

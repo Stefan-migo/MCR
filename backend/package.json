@@ -39,8 +39,7 @@
     "mediasoup",
     "mobile",
     "camera",
-    "streaming",
-    "ndi"
+    "streaming"
   ],
   "author": "Mobile Camera Receptor Team",
   "license": "MIT"

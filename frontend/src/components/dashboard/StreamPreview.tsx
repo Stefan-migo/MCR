@@ -6,15 +6,18 @@ import { BrowserRecvConsumer } from '../../lib/webrtc-consumer';
 type StreamPreviewProps = {
   producerId: string;
   mirrored?: boolean;
+  objectFit?: 'cover' | 'contain';
+  fillMode?: 'fill' | 'fitHeight';
+  className?: string;
+  onDimensions?: (dims: { width: number; height: number }) => void;
 };
 
-export default function StreamPreview({ producerId, mirrored = true }: StreamPreviewProps) {
+export default function StreamPreview({ producerId, mirrored = true, objectFit = 'cover', fillMode = 'fill', className, onDimensions }: StreamPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const consumerRef = useRef<BrowserRecvConsumer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isAttached, setIsAttached] = useState<boolean>(false);
   const [meta, setMeta] = useState<{ width: number; height: number } | null>(null);
-  const [connState, setConnState] = useState<string>('new');
 
   useEffect(() => {
     let mounted = true;
@@ -27,7 +30,6 @@ export default function StreamPreview({ producerId, mirrored = true }: StreamPre
         if (!producerId || !videoRef.current) return;
         if (consumerRef.current) return;
         const consumer = new BrowserRecvConsumer();
-        consumer.onConnectionStateChange((state) => setConnState(state));
         consumerRef.current = consumer;
         let attempts = 0;
         const maxAttempts = 5;
@@ -42,10 +44,13 @@ export default function StreamPreview({ producerId, mirrored = true }: StreamPre
             try {
               const el = videoRef.current;
               if (el) {
-                const updateMeta = () => setMeta({ width: el.videoWidth || 0, height: el.videoHeight || 0 });
+                const updateMeta = () => {
+                  const dims = { width: el.videoWidth || 0, height: el.videoHeight || 0 };
+                  setMeta(dims);
+                  try { onDimensions?.(dims); } catch {}
+                };
                 el.onloadedmetadata = updateMeta;
-                el.onresize = updateMeta as any;
-                // Initial sample (some browsers set dimensions immediately)
+                (el as any).onresize = updateMeta;
                 updateMeta();
               }
             } catch {}
@@ -80,7 +85,7 @@ export default function StreamPreview({ producerId, mirrored = true }: StreamPre
   }, [producerId]);
 
   return (
-    <div className="relative w-full h-full group">
+    <div className={"relative w-full h-full group " + (className || '')}>
       <video
         ref={videoRef}
         autoPlay
@@ -90,23 +95,29 @@ export default function StreamPreview({ producerId, mirrored = true }: StreamPre
           const el = videoRef.current;
           if (!el) return;
           if (el.videoWidth && el.videoHeight) {
-            setMeta({ width: el.videoWidth, height: el.videoHeight });
+            const dims = { width: el.videoWidth, height: el.videoHeight };
+            setMeta(dims);
+            try { onDimensions?.(dims); } catch {}
           }
         }}
         onPlaying={() => {
           setIsAttached(true);
           const el = videoRef.current;
           if (el && el.videoWidth && el.videoHeight) {
-            setMeta({ width: el.videoWidth, height: el.videoHeight });
+            const dims = { width: el.videoWidth, height: el.videoHeight };
+            setMeta(dims);
+            try { onDimensions?.(dims); } catch {}
           }
         }}
-        className="w-full h-full object-cover bg-black"
-        style={{ transform: mirrored ? 'scaleX(-1)' : undefined }}
+        className={fillMode === 'fitHeight' ? 'h-full bg-black' : 'w-full h-full bg-black'}
+        style={{
+          transform: mirrored ? 'scaleX(-1)' : undefined,
+          objectFit: objectFit,
+          width: fillMode === 'fitHeight' ? 'auto' : undefined,
+          height: fillMode === 'fitHeight' ? '100%' : undefined,
+        }}
       />
-      {/* Minimal debug: connection state bottom-left, restart top-right */}
-      <div className="absolute bottom-2 left-2 text-[10px] text-white bg-black/40 px-1.5 py-0.5 rounded z-10">
-        {error ? `Error: ${error}` : `State: ${connState}${meta ? ` • ${meta.width}×${meta.height}` : ''}`}
-      </div>
+      {/* Restart button (hover to show) */}
       <button
         type="button"
         className="absolute bottom-2 right-2 z-10 text-white bg-black/40 hover:bg-black/60 rounded px-2 py-1 text-[11px] opacity-0 group-hover:opacity-100 transition-opacity"
@@ -128,7 +139,6 @@ export default function StreamPreview({ producerId, mirrored = true }: StreamPre
               (async () => {
                 try {
                   const c = new BrowserRecvConsumer();
-                  c.onConnectionStateChange((state) => setConnState(state));
                   consumerRef.current = c;
                   await c.attachTo(videoRef.current!, producerId);
                   setIsAttached(true);

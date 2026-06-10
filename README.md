@@ -57,7 +57,24 @@ A professional real-time mobile camera streaming system designed for VJs, conten
    # Edit .env with your configuration
    ```
 
-4. **Start the servers**
+4. **Important configuration (local LAN)**
+   - Set your LAN IP (used by Mediasoup for ICE):
+   ```bash
+   # In the backend terminal before starting
+   export MEDIASOUP_ANNOUNCED_IP=192.168.100.11
+   ```
+   - Frontend env (`frontend/.env.local`):
+   ```
+   NEXT_PUBLIC_API_URL=https://192.168.100.11:3001
+   NEXT_PUBLIC_WS_URL=wss://192.168.100.11:3001
+   ```
+   - NDI Bridge env when running via Python:
+   ```bash
+   export BACKEND_URL=https://192.168.100.11:3001
+   export BACKEND_WS_URL=wss://192.168.100.11:3001
+   ```
+
+5. **Start the servers**
    ```bash
    # Option 1: Docker Compose (Recommended)
    docker-compose up
@@ -66,8 +83,8 @@ A professional real-time mobile camera streaming system designed for VJs, conten
    # Terminal 1: Backend
    cd backend && npm run dev
    
-   # Terminal 2: Frontend
-   cd frontend && npm run dev
+   # Terminal 2: Frontend (HTTPS)
+   cd frontend && npm run dev:https
    
    # Terminal 3: NDI Bridge
    cd ndi-bridge && python src/main.py

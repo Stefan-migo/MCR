@@ -1,3 +1,35 @@
+# Certificates/keys
+cert.pem
+key.pem
+*/cert.pem
+*/key.pem
+
+# Node modules and build caches
+**/node_modules/
+**/.next/
+**/.turbo/
+
+# Outputs/logs
+**/dist/
+**/logs/
+**/output/
+*.log
+
+# Python venv and env files
+ndi-bridge/venv/
+*.env
+
+# Vendor SDKs / installers
+NDI SDK for Linux/
+Install_NDI_SDK_*/
+Install_NDI_SDK_v5_Linux.*
+
+# Frontend generated artifacts sometimes committed by mistake
+frontend/[PWA]
+frontend/Ready
+frontend/node
+frontend/mobile-camera-receptor-frontend@0.1.0
+
 # Dependencies
 node_modules/
 package-lock.json
