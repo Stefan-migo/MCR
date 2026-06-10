@@ -8,6 +8,7 @@ import StreamGrid from '../../components/dashboard/StreamGrid';
 import StreamList from '../../components/dashboard/StreamList';
 import StreamStats from '../../components/dashboard/StreamStats';
 import StreamControls from '../../components/dashboard/StreamControls';
+import QRCodeModal from '../../components/dashboard/QRCodeModal';
 
 export default function DashboardPage() {
   const {
@@ -28,6 +29,7 @@ export default function DashboardPage() {
   } = useDashboardStore();
 
   const [isInitialized, setIsInitialized] = useState(false);
+  const [showQR, setShowQR] = useState(false);
 
   // Initialize dashboard service on mount
   useEffect(() => {
@@ -224,6 +226,12 @@ export default function DashboardPage() {
                   📋 Copy Stream URL
                 </button>
                 <button
+                  onClick={() => setShowQR(true)}
+                  className="w-full px-3 py-2 bg-gray-700 text-white text-sm rounded hover:bg-gray-600 transition-colors"
+                >
+                  📱 Show QR Code
+                </button>
+                <button
                   onClick={refreshStreams}
                   disabled={isLoading}
                   className="w-full px-3 py-2 bg-gray-700 text-white text-sm rounded hover:bg-gray-600 transition-colors disabled:opacity-50"
@@ -281,6 +289,13 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {showQR && (
+        <QRCodeModal
+          url={`${typeof window !== 'undefined' ? window.location.origin : ''}/stream`}
+          onClose={() => setShowQR(false)}
+        />
+      )}
     </div>
   );
 }

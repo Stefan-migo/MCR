@@ -63,11 +63,32 @@ export const mediasoupConfig = {
       },
       {
         kind: 'video' as const,
+        mimeType: 'video/h264',
+        clockRate: 90000,
+        parameters: {
+          'packetization-mode': 1,
+          'profile-level-id': '42e01f',
+          'level-asymmetry-allowed': 1,
+          'x-google-start-bitrate': 1000
+        },
+        rtcpFeedback: [
+          { type: 'nack' },
+          { type: 'nack', parameter: 'pli' },
+          { type: 'ccm', parameter: 'fir' }
+        ]
+      },
+      {
+        kind: 'video' as const,
         mimeType: 'video/VP8',
         clockRate: 90000,
         parameters: {
           'x-google-start-bitrate': 1000
-        }
+        },
+        rtcpFeedback: [
+          { type: 'nack' },
+          { type: 'nack', parameter: 'pli' },
+          { type: 'ccm', parameter: 'fir' }
+        ]
       },
       {
         kind: 'video' as const,
@@ -75,17 +96,6 @@ export const mediasoupConfig = {
         clockRate: 90000,
         parameters: {
           'profile-id': 2,
-          'x-google-start-bitrate': 1000
-        }
-      },
-      {
-        kind: 'video' as const,
-        mimeType: 'video/h264',
-        clockRate: 90000,
-        parameters: {
-          'packetization-mode': 1,
-          'profile-level-id': '4d0032',
-          'level-asymmetry-allowed': 1,
           'x-google-start-bitrate': 1000
         }
       }
@@ -96,6 +106,10 @@ export const mediasoupConfig = {
     listenIps: [
       {
         ip: '0.0.0.0',
+        announcedIp: process.env.ANNOUNCED_IP_V4 || process.env.PUBLIC_IP || '192.168.100.11'
+      },
+      {
+        ip: '::',
         announcedIp: process.env.ANNOUNCED_IP || process.env.MEDIASOUP_ANNOUNCED_IP || undefined
       }
     ],
@@ -104,21 +118,6 @@ export const mediasoupConfig = {
     preferUdp: true,
     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000
-  },
-
-  plainTransport: {
-    listenIp: { 
-      ip: '0.0.0.0', 
-      announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1' 
-    },
-    rtcpMux: true,        // RTCP and RTP on same port (recommended)
-    comedia: true,        // Server learns client IP from first RTP packet
-    enableSrtp: false,    // Plain RTP (no encryption to NDI bridge)
-    enableSctp: false,    // No data channel needed
-    portRange: {
-      min: 30000,         // Dedicated range for NDI bridge (expanded)
-      max: 31000          // 1000 ports ~ 500 streams (rtcpMux=true)
-    }
   }
 };
 

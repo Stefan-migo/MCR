@@ -90,11 +90,13 @@ const io = new Server(serverToUse, {
   cors: {
     origin: [
       `${protocol}://localhost:3000`,
+      `${protocol}://192.168.0.138:3000`,
       `${protocol}://192.168.100.11:3000`,
       `${protocol}://127.0.0.1:3000`,
       `${protocol}://0.0.0.0:3000`,
       `https://0.0.0.0:3000`,
       `https://localhost:3000`,
+      `https://192.168.0.138:3000`,
       `https://192.168.100.11:3000`
     ],
     methods: ['GET', 'POST'],
@@ -105,16 +107,22 @@ const io = new Server(serverToUse, {
 const mediasoupRouter = new MediasoupRouter();
 
 // Middleware
+const corsStaticOrigins = process.env.CORS_ORIGIN 
+  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
+  : [];
+
+function corsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+  if (!origin || corsStaticOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+  if (origin.endsWith('.trycloudflare.com')) {
+    return callback(null, true);
+  }
+  callback(null, true);
+}
+
 app.use(cors({
-  origin: [
-    `${protocol}://localhost:3000`,
-    `${protocol}://192.168.100.11:3000`,
-    `${protocol}://127.0.0.1:3000`,
-    `${protocol}://0.0.0.0:3000`,
-    `https://0.0.0.0:3000`,
-    `https://localhost:3000`,
-    `https://192.168.100.11:3000`
-  ],
+  origin: corsOrigin,
   credentials: true
 }));
 app.use(express.json());
@@ -455,109 +463,6 @@ io.on('connection', (socket) => {
       }
     } catch (error) {
       callback({ error: 'Failed to disconnect stream' });
-    }
-  });
-
-  // NDI Bridge events
-  socket.on('ndi-bridge-connect', (data, callback) => {
-    try {
-      console.log('🎬 NDI Bridge connected:', socket.id);
-      callback({ success: true, message: 'NDI Bridge connected successfully' });
-    } catch (error) {
-      callback({ error: 'Failed to connect NDI Bridge' });
-    }
-  });
-
-  socket.on('ndi-bridge-request-streams', (data, callback) => {
-    try {
-      console.log('🎬 NDI Bridge requesting streams...');
-      const streams = mediasoupRouter.getActiveStreams();
-      console.log(`📊 Found ${streams.length} active streams`);
-      const streamList = streams.map(stream => ({
-        id: stream.id,
-        producer_id: stream.producerId,
-        device_name: stream.deviceName || stream.clientId,
-        resolution: stream.resolution || { width: 1280, height: 720 },
-        fps: stream.fps || 30,
-        kind: stream.kind,
-        created_at: stream.createdAt
-      }));
-      
-      console.log('📤 Sending streams to NDI Bridge:', streamList);
-      callback({ 
-        success: true, 
-        streams: streamList,
-        count: streamList.length 
-      });
-    } catch (error) {
-      console.error('❌ Error getting active streams:', error);
-      callback({ error: 'Failed to get active streams' });
-    }
-  });
-
-  socket.on('ndi-bridge-consume-stream', async (data, callback) => {
-    try {
-      const { stream_id, producer_id, rtp_capabilities, receiver_ip, receiver_port } = data;
-      
-      console.log(`🎬 NDI Bridge requesting stream: ${stream_id} (producer: ${producer_id})`);
-      console.log(`🔧 NDI Bridge RTP capabilities:`, JSON.stringify(rtp_capabilities, null, 2));
-      if (receiver_ip && receiver_port) {
-        console.log(`📥 NDI Bridge UDP receiver at ${receiver_ip}:${receiver_port}`);
-      }
-      
-      // Validate producer exists
-      const producer = mediasoupRouter.getProducer(producer_id);
-      if (!producer) {
-        return callback({ 
-          success: false, 
-          error: `Producer ${producer_id} not found` 
-        });
-      }
-      
-      console.log(`🔧 Producer RTP parameters:`, JSON.stringify(producer.rtpParameters, null, 2));
-      
-      // Create dedicated PlainTransport for this stream
-      const { transport, tuple, rtcpTuple } = 
-        await mediasoupRouter.createPlainTransportForStream(stream_id, producer_id);
-
-      // If the NDI bridge provided a UDP receiver endpoint, connect to it so mediasoup
-      // will send RTP directly to the bridge.
-      if (receiver_ip && receiver_port && 'connect' in transport) {
-        await (transport as any).connect({ ip: receiver_ip, port: receiver_port });
-        console.log(`🔗 Connected PlainTransport ${transport.id} to ${receiver_ip}:${receiver_port}`);
-      }
-
-      // Create consumer directly on the PlainTransport so mediasoup sends RTP out
-      const consumer = await mediasoupRouter.createConsumer(transport.id, producer_id, rtp_capabilities);
-      console.log(`🎧 Consumer created on PlainTransport: ${consumer.id}`);
-      
-      // Extract stream metadata
-      const streamInfo = mediasoupRouter.getStreamByProducerId(producer_id);
-      
-      callback({
-        success: true,
-        consumer_id: consumer.id,
-        transport: {
-          id: transport.id,
-          ip: tuple.ip,
-          port: tuple.port,
-          rtcpPort: rtcpTuple?.port,
-          protocol: 'udp'
-        },
-        rtp_parameters: consumer.rtpParameters,
-        stream_metadata: {
-          width: streamInfo?.resolution.width || 1280,
-          height: streamInfo?.resolution.height || 720,
-          fps: streamInfo?.fps || 30,
-          device_name: streamInfo?.deviceName || 'Unknown'
-        }
-      });
-      
-      console.log(`✅ PlainTransport created: ${tuple.ip}:${tuple.port} for ${stream_id}`);
-      
-    } catch (error) {
-      console.error('❌ Error creating NDI bridge consumer:', error);
-      callback({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 

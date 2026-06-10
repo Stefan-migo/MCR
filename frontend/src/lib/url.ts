@@ -1,6 +1,6 @@
 export function getDefaultBackendHost(): string {
   if (typeof window !== 'undefined') return window.location.hostname;
-  return process.env.NEXT_PUBLIC_BACKEND_HOST || '192.168.100.11';
+  return process.env.NEXT_PUBLIC_BACKEND_HOST || '192.168.0.138';
 }
 
 export function getBackendHttpBase(): string {
