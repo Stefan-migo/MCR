@@ -9,13 +9,11 @@ if [ ! -f "key.pem" ] || [ ! -f "cert.pem" ]; then
         echo "✅ Copied SSL certificates to frontend"
     else
         echo "⚠️  WARNING: SSL certificates not found!"
-        echo "   Generate them with: openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj '/CN=192.168.0.138' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1,IP:192.168.0.138'"
+        echo "   Run from project root: ./generate-certs.sh <YOUR_LAN_IP>"
     fi
 fi
 
 export NODE_ENV=development
-export NEXT_PUBLIC_API_URL=https://192.168.0.138:3001
-export NEXT_PUBLIC_WS_URL=wss://192.168.0.138:3001
 
 # Use HTTPS server if certificates exist, otherwise fallback to HTTP
 if [ -f "key.pem" ] && [ -f "cert.pem" ]; then

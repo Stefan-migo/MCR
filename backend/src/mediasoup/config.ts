@@ -1,5 +1,6 @@
 import { types as mediasoupTypes } from 'mediasoup';
 import path from 'path';
+import { getAnnouncedIp } from '../utils/network';
 
 // Get the correct worker path for workspace setup
 const getWorkerPath = () => {
@@ -28,10 +29,21 @@ const getWorkerPath = () => {
   return workerExecutable;
 };
 
+export interface NdiBridgeConfig {
+  enabled: boolean;
+  streamDiscovery: boolean;
+}
+
+export interface PlainTransportConfig {
+  listenIp: string;
+  portRangeStart: number;
+  portRangeEnd: number;
+}
+
 export const mediasoupConfig = {
   worker: {
-    rtcMinPort: 10000,
-    rtcMaxPort: 12000,
+    rtcMinPort: 20000,
+    rtcMaxPort: 21000,
     logLevel: 'warn' as const,
     logTags: [
       'info',
@@ -106,7 +118,7 @@ export const mediasoupConfig = {
     listenIps: [
       {
         ip: '0.0.0.0',
-        announcedIp: process.env.ANNOUNCED_IP_V4 || process.env.PUBLIC_IP || '192.168.100.11'
+        announcedIp: getAnnouncedIp()
       },
       {
         ip: '::',
@@ -118,6 +130,17 @@ export const mediasoupConfig = {
     preferUdp: true,
     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000
+  },
+
+  plainTransport: {
+    listenIp: '127.0.0.1',
+    portRangeStart: parseInt(process.env.PLAIN_TRANSPORT_PORT_RANGE_START || '20000', 10),
+    portRangeEnd: parseInt(process.env.PLAIN_TRANSPORT_PORT_RANGE_END || '21000', 10),
+  },
+
+  ndiBridge: {
+    enabled: process.env.NDI_BRIDGE_ENABLED === 'true',
+    streamDiscovery: true,
   }
 };
 
