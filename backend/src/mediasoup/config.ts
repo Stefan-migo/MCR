@@ -32,6 +32,7 @@ const getWorkerPath = () => {
 export interface NdiBridgeConfig {
   enabled: boolean;
   streamDiscovery: boolean;
+  plainTransport: PlainTransportConfig;
 }
 
 export interface PlainTransportConfig {
@@ -141,6 +142,11 @@ export const mediasoupConfig = {
   ndiBridge: {
     enabled: process.env.NDI_BRIDGE_ENABLED === 'true',
     streamDiscovery: true,
+    plainTransport: {
+      listenIp: '127.0.0.1',
+      portRangeStart: parseInt(process.env.PLAIN_TRANSPORT_PORT_RANGE_START || '20000', 10),
+      portRangeEnd: parseInt(process.env.PLAIN_TRANSPORT_PORT_RANGE_END || '21000', 10),
+    },
   }
 };
 

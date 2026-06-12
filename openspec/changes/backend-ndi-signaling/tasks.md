@@ -33,26 +33,26 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Core — NdiSignaling Class
 
-- [ ] 2.1 `ndiSignaling.ts`: Define `BridgeSession`, `RtpStreamInfo` interfaces; class skeleton with `io`, `router`, `bridgeSessions: Map<string, BridgeSession>`
-- [ ] 2.2 `ndiSignaling.ts`: `init()` — register `/ndi-bridge` namespace, subscribe to router `new-producer`/`producer-closed`
-- [ ] 2.3 `ndiSignaling.ts`: `handleBridgeConnect()` — call `getVideoProducers()`, create PlainTransport per producer via `createBridgePlainTransport()`, emit `active-streams`
-- [ ] 2.4 `ndiSignaling.ts`: `handleBridgeDisconnect()` — close each session PlainTransport, delete from map
-- [ ] 2.5 `ndiSignaling.ts`: `onNewProducer()` — create PlainTransport (video only), pipe producer, emit `stream-started`
-- [ ] 2.6 `ndiSignaling.ts`: `onProducerClosed()` — find matching transport per session, close, emit `stream-stopped`
-- [ ] 2.7 `ndiSignaling.ts`: `createBridgePlainTransport()` — `createPlainTransport(comedia, rtcpMux=false)`, `connect()`, `produce()`, extract codec; catch port exhaustion, emit `error` with `PORT_EXHAUSTION`
+- [x] 2.1 `ndiSignaling.ts`: Define `BridgeSession`, `RtpStreamInfo` interfaces; class skeleton with `io`, `router`, `bridgeSessions: Map<string, BridgeSession>`
+- [x] 2.2 `ndiSignaling.ts`: `init()` — register `/ndi-bridge` namespace, subscribe to router `new-producer`/`producer-closed`
+- [x] 2.3 `ndiSignaling.ts`: `handleBridgeConnect()` — call `getVideoProducers()`, create PlainTransport per producer via `createBridgePlainTransport()`, emit `active-streams`
+- [x] 2.4 `ndiSignaling.ts`: `handleBridgeDisconnect()` — close each session PlainTransport, delete from map
+- [x] 2.5 `ndiSignaling.ts`: `onNewProducer()` — create PlainTransport (video only), pipe producer, emit `stream-started`
+- [x] 2.6 `ndiSignaling.ts`: `onProducerClosed()` — find matching transport per session, close, emit `stream-stopped`
+- [x] 2.7 `ndiSignaling.ts`: `createBridgePlainTransport()` — `createPlainTransport(comedia, rtcpMux=false)`, `connect()`, `produce()`, extract codec; catch port exhaustion, emit `error` with `PORT_EXHAUSTION`
 
 ## Phase 3: Integration
 
-- [ ] 3.1 `server.ts`: Import `NdiSignaling`, instantiate in `startServer()` after router init, guard behind `mediasoupConfig.plainTransport.enabled`
-- [ ] 3.2 `docker-compose.yml`: Expand UDP range to `20000-21000`, add `ndi-bridge` placeholder service with `depends_on: backend`
-- [ ] 3.3 `.env.example`: Create with `MEDIASOUP_PLAIN_TRANSPORT_PORT_RANGE=20000-21000`
+- [x] 3.1 `server.ts`: Import `NdiSignaling`, instantiate in `startServer()` after router init, guard behind `mediasoupConfig.plainTransport.enabled`
+- [x] 3.2 `docker-compose.yml`: Expand UDP range to `20000-21000`, add `ndi-bridge` placeholder service with `depends_on: backend`
+- [x] 3.3 `.env.example`: Create with `MEDIASOUP_PLAIN_TRANSPORT_PORT_RANGE=20000-21000`
 
 ## Phase 4: Testing
 
-- [ ] 4.1 `mediasoup/__tests__/ndiSignaling.test.ts`: Mock `io.of('/ndi-bridge')` + router events; test connect emits `active-streams` (R-002)
-- [ ] 4.2 `ndiSignaling.test.ts`: Test `stream-started` on new video producer, skipped audio (R-003)
-- [ ] 4.3 `ndiSignaling.test.ts`: Test `stream-stopped` on producer close, transport cleanup (R-004)
-- [ ] 4.4 `ndiSignaling.test.ts`: Test disconnect cleanup closes all bridge transports (R-005)
-- [ ] 4.5 `ndiSignaling.test.ts`: Test multiple concurrent bridges with independent transport sets (R-006)
-- [ ] 4.6 `ndiSignaling.test.ts`: Test port exhaustion — catch error, emit to bridge, continue (R-008)
-- [ ] 4.7 `config.test.ts`: Add test for `plainTransport` section defaults and env var override (R-009)
+- [x] 4.1 `mediasoup/__tests__/ndiSignaling.test.ts`: Mock `io.of('/ndi-bridge')` + router events; test connect emits `active-streams` (R-002)
+- [x] 4.2 `ndiSignaling.test.ts`: Test `stream-started` on new video producer, skipped audio (R-003)
+- [x] 4.3 `ndiSignaling.test.ts`: Test `stream-stopped` on producer close, transport cleanup (R-004)
+- [x] 4.4 `ndiSignaling.test.ts`: Test disconnect cleanup closes all bridge transports (R-005)
+- [x] 4.5 `ndiSignaling.test.ts`: Test multiple concurrent bridges with independent transport sets (R-006)
+- [x] 4.6 `ndiSignaling.test.ts`: Test port exhaustion — catch error, emit to bridge, continue (R-008)
+- [x] 4.7 `config.test.ts`: Add test for `plainTransport` section defaults and env var override (R-009)

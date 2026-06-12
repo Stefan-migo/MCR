@@ -1,3 +1,49 @@
+describe('mediasoupConfig — plainTransport section (R-009)', () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    jest.resetModules();
+  });
+
+  it('should have default plainTransport listenIp and port range', () => {
+    delete process.env.PLAIN_TRANSPORT_PORT_RANGE_START;
+    delete process.env.PLAIN_TRANSPORT_PORT_RANGE_END;
+
+    jest.isolateModules(() => {
+      const { mediasoupConfig: cfg } = require('../config');
+      expect(cfg.plainTransport).toBeDefined();
+      expect(cfg.plainTransport.listenIp).toBe('127.0.0.1');
+      expect(cfg.plainTransport.portRangeStart).toBe(20000);
+      expect(cfg.plainTransport.portRangeEnd).toBe(21000);
+    });
+  });
+
+  it('should use env var overrides for port range', () => {
+    process.env.PLAIN_TRANSPORT_PORT_RANGE_START = '30000';
+    process.env.PLAIN_TRANSPORT_PORT_RANGE_END = '30010';
+
+    jest.isolateModules(() => {
+      const { mediasoupConfig: cfg } = require('../config');
+      expect(cfg.plainTransport.portRangeStart).toBe(30000);
+      expect(cfg.plainTransport.portRangeEnd).toBe(30010);
+    });
+  });
+
+  it('should have ndiBridge with same defaults as plainTransport', () => {
+    delete process.env.PLAIN_TRANSPORT_PORT_RANGE_START;
+    delete process.env.PLAIN_TRANSPORT_PORT_RANGE_END;
+
+    jest.isolateModules(() => {
+      const { mediasoupConfig: cfg } = require('../config');
+      expect(cfg.ndiBridge).toBeDefined();
+      expect(cfg.ndiBridge.enabled).toBe(false);
+      expect(cfg.ndiBridge.streamDiscovery).toBe(true);
+      expect(cfg.ndiBridge.plainTransport).toEqual(cfg.plainTransport);
+    });
+  });
+});
+
 describe('mediasoupConfig announcedIp', () => {
   const ORIGINAL_ENV = { ...process.env };
 

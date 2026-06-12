@@ -7,6 +7,8 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { MediasoupRouter } from './mediasoup/router';
+import { NdiSignaling } from './mediasoup/ndiSignaling';
+import mediasoupConfig from './mediasoup/config';
 import streamsRouter, { setMediasoupRouter } from './api/routes/streams';
 import { getAnnouncedIp } from './utils/network';
 
@@ -540,6 +542,13 @@ async function startServer() {
     // Inject mediasoup router into streams API
     setMediasoupRouter(mediasoupRouter);
     
+    // Initialize NDI bridge signaling if enabled
+    if (mediasoupConfig.ndiBridge.enabled) {
+      const ndiSignaling = new NdiSignaling(io, mediasoupRouter, mediasoupConfig.ndiBridge);
+      ndiSignaling.init();
+      console.log('✅ NDI bridge signaling initialized');
+    }
+
     // Start stats broadcasting
     startStatsBroadcasting();
     

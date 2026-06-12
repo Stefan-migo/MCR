@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:3001"
-      - "10000-12000:10000-12000/udp"  # WebRTC port range
+      - "20000-21000:20000-21000/udp"  # WebRTC + PlainTransport port range
     environment:
       - NODE_ENV=production
       - BACKEND_PORT=3001
@@ -16,6 +16,19 @@ services:
       - /app/node_modules
     networks:
       - mcr-network
+
+  ndi-bridge:
+    build:
+      context: ./ndi-bridge
+      dockerfile: Dockerfile
+    environment:
+      - BACKEND_URL=http://backend:3001
+      - NDI_BRIDGE_ENABLED=true
+    depends_on:
+      - backend
+    networks:
+      - mcr-network
+    restart: unless-stopped
 
   frontend:
     build:
