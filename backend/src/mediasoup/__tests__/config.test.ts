@@ -30,7 +30,7 @@ describe('mediasoupConfig — plainTransport section (R-009)', () => {
     });
   });
 
-  it('should have ndiBridge with same defaults as plainTransport', () => {
+  it('should have ndiBridge with 0.0.0.0 listenIp for Docker access', () => {
     delete process.env.PLAIN_TRANSPORT_PORT_RANGE_START;
     delete process.env.PLAIN_TRANSPORT_PORT_RANGE_END;
 
@@ -39,7 +39,10 @@ describe('mediasoupConfig — plainTransport section (R-009)', () => {
       expect(cfg.ndiBridge).toBeDefined();
       expect(cfg.ndiBridge.enabled).toBe(false);
       expect(cfg.ndiBridge.streamDiscovery).toBe(true);
-      expect(cfg.ndiBridge.plainTransport).toEqual(cfg.plainTransport);
+      // ndiBridge intentionally uses 0.0.0.0 so Docker bridge container can connect
+      expect(cfg.ndiBridge.plainTransport.listenIp).toBe('0.0.0.0');
+      expect(cfg.ndiBridge.plainTransport.portRangeStart).toBe(cfg.plainTransport.portRangeStart);
+      expect(cfg.ndiBridge.plainTransport.portRangeEnd).toBe(cfg.plainTransport.portRangeEnd);
     });
   });
 });
