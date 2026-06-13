@@ -56,7 +56,7 @@ def main():
     print(f"[Bridge] Source prefix: {config.source_prefix}")
     print(f"[Bridge] Max streams: {config.max_streams}")
 
-    signaling = SignalingClient(config.backend_url)
+    signaling = SignalingClient(config.backend_url, ssl_verify=config.ssl_verify)
     manager = StreamManager(
         signaling,
         max_streams=config.max_streams,
@@ -114,7 +114,8 @@ def main():
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    if hasattr(signal, 'SIGTERM'):  # SIGTERM is Unix-only
+        signal.signal(signal.SIGTERM, shutdown)
 
     # ------------------------------------------------------------------
     # Start health check HTTP server
@@ -132,7 +133,10 @@ def main():
     print("[Bridge] Connected. Waiting for streams...")
 
     # Block indefinitely until a signal arrives
-    signal.pause()  # type: ignore[attr-defined]
+    # Note: signal.pause() is Unix-only, use Event().wait() for Windows compat
+    import threading as _threading
+    _shutdown_event = _threading.Event()
+    _shutdown_event.wait()
 
 
 if __name__ == "__main__":
