@@ -12,14 +12,14 @@ class NdiSender:
 
     def __init__(self, source_name: str):
         self.source_name = source_name
-        self._send: Optional[ndi.send_instance_t] = None
+        self._send = None
 
     def initialize(self):
         """Create the NDI source. Must be called before send_frame()."""
         if not ndi.initialize():
             raise RuntimeError("Failed to initialize NDI")
 
-        send_desc = ndi.send_create_t()
+        send_desc = ndi.SendCreate()
         send_desc.ndi_name = self.source_name
         send_desc.clock_video = True
         send_desc.clock_audio = False
