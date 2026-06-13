@@ -106,11 +106,9 @@ class StreamManager:
         state = StreamState(producer_id, backend_ip, rtp_port, source_name)
         self.streams[producer_id] = state
 
-        # Create UDP receiver and perform comedia handshake
+        # Create UDP receiver (backend will connect() to us explicitly)
         receiver = RtpReceiver()
         state.receiver = receiver
-        receiver.send_dummy_packet(backend_ip, rtp_port)
-        print(f"[Manager] Comedia handshake sent to {backend_ip}:{rtp_port}")
 
         # Start receiving RTP packets
         receiver.start(lambda nal: self._on_nal_unit(producer_id, nal))
