@@ -180,6 +180,11 @@ export class NdiSignaling {
           paused: false,
         });
 
+        // Explicitly resume the Consumer to ensure media flows immediately.
+        // Consume with paused: false should suffice, but some mediasoup
+        // versions still need an explicit resume() call.
+        await consumer.resume();
+
         socket.emit('consumer-ready', { producerId });
 
         consumer.on('producerclose', () => {
