@@ -1,0 +1,36 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Tech stack: TypeScript (primary), Python 3.11+ (NDI bridge), Node.js 20 LTS, Next.js 14 (App Router + PWA), Express.js, Socket.io, Mediasoup 3.x (SFU WebRTC), TailwindCSS 3.x, Zustand, Zod, Docker/Docker Compose, Nginx
+  Architecture: Layered monolithic — Express routes + MediasoupRouter class + Socket.io signaling on backend; Next.js App Router pages + Zustand stores + service classes in lib/ on frontend. Container/Presentational-ish pattern. Not clean/hexagonal. No DI, no repository pattern.
+  Testing: Jest 29.x configured in both workspaces but ZERO test files exist. ESLint v8 in devDeps but no eslintrc config file. No formatter configured. TypeScript strict mode active.
+  Style: TailwindCSS utility classes, dark theme (gray-900/black backgrounds), glassmorphism accents (backdrop-blur, bg-opacity patterns), emoji icons in UI labels.
+
+rules:
+  proposal:
+    - Include risk assessment for changes touching WebRTC/mediasoup signaling
+    - State rollback strategy for infrastructure changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Tag WebRTC signaling specs with [sdp-exchange]
+  design:
+    - Include sequence diagrams for WebRTC signaling flows
+    - Document mediasoup transport lifecycle decisions
+    - Note any mock/stub data that needs replacement
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Prefer splitting backend from frontend tasks
+  apply:
+    - Follow existing code patterns (classes for services, zustand for stores)
+    - Do NOT add emoji to code identifiers or comments
+    tdd: true
+    test_command: "npm test"
+  verify:
+    test_command: "npm test"
+    build_command: "npm run build"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

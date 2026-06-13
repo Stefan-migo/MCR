@@ -7,7 +7,10 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { MediasoupRouter } from './mediasoup/router';
+import { NdiSignaling } from './mediasoup/ndiSignaling';
+import mediasoupConfig from './mediasoup/config';
 import streamsRouter, { setMediasoupRouter } from './api/routes/streams';
+import { getAnnouncedIp } from './utils/network';
 
 // Load environment variables
 dotenv.config();
@@ -86,19 +89,25 @@ if (certPath && keyPath) {
 const serverToUse: HttpServer | HttpsServer = useHttps ? httpsServer : httpServer;
 const protocol = useHttps ? 'https' : 'http';
 
+const detectedIp = getAnnouncedIp();
+
+// Build CORS origins dynamically: detected IP + localhost + 127.0.0.1 + 0.0.0.0 + env var origins
+const corsOrigins: string[] = [
+  `${protocol}://localhost:3000`,
+  `${protocol}://${detectedIp}:3000`,
+  `${protocol}://127.0.0.1:3000`,
+  `${protocol}://0.0.0.0:3000`,
+  `https://localhost:3000`,
+  `https://${detectedIp}:3000`,
+  `https://127.0.0.1:3000`,
+  `https://0.0.0.0:3000`,
+  // Add any origins from the CORS_ORIGIN env var
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()) : []),
+];
+
 const io = new Server(serverToUse, {
   cors: {
-    origin: [
-      `${protocol}://localhost:3000`,
-      `${protocol}://192.168.0.138:3000`,
-      `${protocol}://192.168.100.11:3000`,
-      `${protocol}://127.0.0.1:3000`,
-      `${protocol}://0.0.0.0:3000`,
-      `https://0.0.0.0:3000`,
-      `https://localhost:3000`,
-      `https://192.168.0.138:3000`,
-      `https://192.168.100.11:3000`
-    ],
+    origin: corsOrigins,
     methods: ['GET', 'POST'],
   },
 });
@@ -135,6 +144,11 @@ app.get('/health', (req, res) => {
     service: 'Mobile Camera Receptor Backend',
     mediasoup: mediasoupRouter ? 'initialized' : 'not initialized'
   });
+});
+
+// Network info endpoint: returns the detected LAN IP
+app.get('/api/network-ip', (req, res) => {
+  res.json({ ip: getAnnouncedIp() });
 });
 
 // API routes
@@ -528,6 +542,13 @@ async function startServer() {
     // Inject mediasoup router into streams API
     setMediasoupRouter(mediasoupRouter);
     
+    // Initialize NDI bridge signaling if enabled
+    if (mediasoupConfig.ndiBridge.enabled) {
+      const ndiSignaling = new NdiSignaling(io, mediasoupRouter, mediasoupConfig.ndiBridge);
+      ndiSignaling.init();
+      console.log('✅ NDI bridge signaling initialized');
+    }
+
     // Start stats broadcasting
     startStatsBroadcasting();
     

@@ -55,7 +55,7 @@ generate_certificates() {
     if [ ! -f "key.pem" ] || [ ! -f "cert.pem" ]; then
         openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
             -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,DNS:127.0.0.1,IP:127.0.0.1,IP:192.168.0.138"
+            -addext "subjectAltName=DNS:localhost,DNS:127.0.0.1,IP:127.0.0.1"
         print_success "SSL certificates generated"
     else
         print_success "SSL certificates already exist"
@@ -83,8 +83,9 @@ setup_backend() {
     cat > .env.local << EOF
 NODE_ENV=development
 PORT=3001
-MEDIASOUP_ANNOUNCED_IP=192.168.0.138
-CORS_ORIGIN=http://localhost:3000,https://localhost:3000,http://192.168.0.138:3000,https://192.168.0.138:3000
+# Mediasoup announced IP auto-detected at startup — override here if needed:
+# MEDIASOUP_ANNOUNCED_IP=192.168.x.x
+# CORS_ORIGIN=http://localhost:3000,https://localhost:3000
 EOF
     
     print_success "Backend setup complete"
@@ -111,8 +112,10 @@ setup_frontend() {
     # Create .env.local file for local development
     cat > .env.local << EOF
 NODE_ENV=development
-NEXT_PUBLIC_API_URL=https://192.168.0.138:3001
-NEXT_PUBLIC_WS_URL=wss://192.168.0.138:3001
+# Backend URL is auto-detected from window.location.hostname at runtime
+# Uncomment to override:
+# NEXT_PUBLIC_API_URL=https://192.168.x.x:3001
+# NEXT_PUBLIC_WS_URL=wss://192.168.x.x:3001
 EOF
     
     print_success "Frontend setup complete"
@@ -146,8 +149,21 @@ EOF
     cat > start-all.sh << 'EOF'
 #!/bin/bash
 
-# Start all services in background
 echo "🚀 Starting all services..."
+
+# Detect LAN IP
+if command -v ip &> /dev/null && ip route get 1 &>/dev/null 2>&1; then
+    DETECTED_IP=$(ip route get 1 | awk '{print $NF; exit}' 2>/dev/null)
+elif command -v hostname &> /dev/null; then
+    DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+else
+    DETECTED_IP="127.0.0.1"
+fi
+
+# Check SSL certs
+if [ ! -f "cert.pem" ] || [ ! -f "key.pem" ]; then
+    echo "📋 SSL certificates not found. Run: ./generate-certs.sh <LAN_IP>"
+fi
 
 # Start backend
 ./start-backend.sh &
@@ -164,8 +180,8 @@ echo "✅ All services started!"
 echo "Backend PID: $BACKEND_PID"
 echo "Frontend PID: $FRONTEND_PID"
 echo ""
-echo "🌐 Frontend: https://192.168.0.138:3000"
-echo "🔧 Backend: https://192.168.0.138:3001"
+echo "🌐 Frontend: https://${DETECTED_IP}:3000"
+echo "🔧 Backend: https://${DETECTED_IP}:3001"
 echo ""
 echo "Press Ctrl+C to stop all services"
 
@@ -204,11 +220,11 @@ main() {
     echo "   - Backend: ./start-backend.sh"
     echo "   - Frontend: ./start-frontend.sh"
     echo ""
-    echo "🌐 Access URLs:"
-    echo "   - Frontend: https://192.168.0.138:3000"
-    echo "   - Backend: https://192.168.0.138:3001"
+    echo "🌐 Access URLs (use your LAN IP for mobile access):"
+    echo "   - Frontend: https://localhost:3000"
+    echo "   - Backend: https://localhost:3001"
     echo ""
-    echo "📱 Mobile access: https://192.168.0.138:3000"
+    echo "📱 Mobile access: https://<YOUR_LAN_IP>:3000"
     echo "   (Accept the self-signed certificate warning)"
 }
 

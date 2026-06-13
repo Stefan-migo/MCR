@@ -5,25 +5,40 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:3001"
-      - "10000-12000:10000-12000/udp"  # WebRTC port range
+      - "20000-21000:20000-21000/udp"  # WebRTC + PlainTransport port range
     environment:
       - NODE_ENV=production
       - BACKEND_PORT=3001
       - CORS_ORIGIN=https://localhost:3000
-      - MEDIASOUP_ANNOUNCED_IP=${MEDIASOUP_ANNOUNCED_IP:-${PUBLIC_IP:-192.168.0.138}}
+      - MEDIASOUP_ANNOUNCED_IP=${MEDIASOUP_ANNOUNCED_IP:-${PUBLIC_IP:-}}
     volumes:
       - ./backend:/app
       - /app/node_modules
     networks:
       - mcr-network
 
+  ndi-bridge:
+    build:
+      context: ./ndi-bridge
+      dockerfile: Dockerfile
+    environment:
+      - NDI_BACKEND_URL=http://backend:3001
+      - NDI_SOURCE_PREFIX=MCR-
+      - NDI_MAX_STREAMS=8
+      - NDI_LOG_LEVEL=INFO
+    depends_on:
+      - backend
+    networks:
+      - mcr-network
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=https://${PUBLIC_IP:-192.168.0.138}:3001
-        - NEXT_PUBLIC_WS_URL=wss://${PUBLIC_IP:-192.168.0.138}:3001
+        - NEXT_PUBLIC_API_URL=https://${PUBLIC_IP:-localhost}:3001
+        - NEXT_PUBLIC_WS_URL=wss://${PUBLIC_IP:-localhost}:3001
     ports:
       - "3000:3000"
     environment:

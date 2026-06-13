@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import * as mediasoup from 'mediasoup';
 import { types as mediasoupTypes } from 'mediasoup';
 import { mediasoupConfig } from './config';
@@ -24,7 +25,7 @@ export interface StreamInfo {
   };
 }
 
-export class MediasoupRouter {
+export class MediasoupRouter extends EventEmitter {
   private worker: mediasoupTypes.Worker | null = null;
   private router: mediasoupTypes.Router | null = null;
   public transports: Map<string, mediasoupTypes.WebRtcTransport | mediasoupTypes.PlainTransport> = new Map();
@@ -87,6 +88,7 @@ export class MediasoupRouter {
     });
 
     this.producers.set(producer.id, producer);
+    this.emit('new-producer', producer);
 
     // Create stream metadata for video producers
     if (kind === 'video') {
@@ -200,6 +202,10 @@ export class MediasoupRouter {
     return this.producers.get(producerId);
   }
 
+  getVideoProducers(): mediasoupTypes.Producer[] {
+    return Array.from(this.producers.values()).filter(p => p.kind === 'video');
+  }
+
   getConsumer(consumerId: string): mediasoupTypes.Consumer | undefined {
     return this.consumers.get(consumerId);
   }
@@ -277,6 +283,7 @@ export class MediasoupRouter {
 
   // Method to handle producer close events (when devices disconnect)
   handleProducerClosed(producerId: string): void {
+    this.emit('producer-closed', producerId);
     const stream = Array.from(this.streamMetadata.values()).find(s => s.producerId === producerId);
     if (stream) {
       console.log(`🔌 Stream disconnected: ${stream.id} (client: ${stream.clientId})`);
