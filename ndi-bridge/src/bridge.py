@@ -71,12 +71,12 @@ def main():
     signaling.on("stream-stopped", manager.on_stream_stopped)
     signaling.on("consumer-ready", manager.on_consumer_ready)
     signaling.on("consumer-closed", manager.on_consumer_closed)
-    signaling.on(
-        "active-streams",
-        lambda data: print(
-            f"[Bridge] Active streams: {len(data.get('streams', []))}"
-        ),
-    )
+    def _on_active_streams(data: dict):
+        """Handle active-streams — start pipeline for each existing stream."""
+        streams = data.get("streams", [])
+        print(f"[Bridge] Active streams: {len(streams)}")
+        for stream in streams:
+            manager.on_stream_started(stream)
 
     # Log consumer errors from the backend
     def _on_consumer_error(data: dict):
