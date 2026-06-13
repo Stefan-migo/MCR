@@ -289,7 +289,7 @@ export class NdiSignaling {
     const transport = await this.router.createPlainTransport({
       listenIp: { ip: this.config.plainTransport.listenIp },
       rtcpMux: false,
-      comedia: true,
+      comedia: false,
     });
 
     const firstCodec = producer.rtpParameters.codecs[0];

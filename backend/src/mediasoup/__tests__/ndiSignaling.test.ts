@@ -192,7 +192,7 @@ describe('NdiSignaling — new producer creates PlainTransport (R-003)', () => {
     expect(createPlainTransport).toHaveBeenCalledWith({
       listenIp: { ip: '127.0.0.1', announcedIp: undefined },
       rtcpMux: false,
-      comedia: true,
+      comedia: false,
     });
     expect(socketEmit).toHaveBeenCalledWith('stream-started', {
       producerId: 'prod-new',
