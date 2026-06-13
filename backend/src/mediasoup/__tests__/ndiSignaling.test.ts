@@ -22,7 +22,8 @@ function makeMockTransport(port: number) {
     id: `transport-${port}`,
     tuple: { localIp: '127.0.0.1', localPort: port },
     close: jest.fn(),
-    consume: jest.fn().mockResolvedValue({ id: 'consumer-1', resume: jest.fn() }),
+    connect: jest.fn().mockResolvedValue(undefined),
+    consume: jest.fn().mockResolvedValue({ id: 'consumer-1', on: jest.fn(), resume: jest.fn() }),
   };
 }
 
@@ -89,7 +90,7 @@ function setupSignaling() {
  * Simulates a bridge connection and waits for it to fully complete.
  */
 async function simulateConnect(handlers: CapturedHandlers, socketEmit: jest.Mock, socketOn: jest.Mock) {
-  const socket: any = { id: 'test-socket', emit: socketEmit, on: socketOn };
+  const socket: any = { id: 'test-socket', emit: socketEmit, on: socketOn, handshake: { address: '127.0.0.1' } };
   const promise = handlers.onConnection!(socket);
   if (promise && typeof promise.then === 'function') await promise;
 }

@@ -115,9 +115,10 @@ class StreamManager:
         # Start receiving RTP packets
         receiver.start(lambda nal: self._on_nal_unit(producer_id, nal))
 
-        # Request Consumer from backend
-        self.signaling.emit_consume_stream(producer_id)
-        print(f"[Manager] Consume-stream requested for {producer_id}")
+        # Request Consumer from backend, passing our UDP listening port
+        bridge_port = receiver.local_port
+        self.signaling.emit_consume_stream(producer_id, rtp_port=bridge_port)
+        print(f"[Manager] Consume-stream requested for {producer_id} (bridge listening on :{bridge_port})")
 
         # Create H.264 decoder for this stream
         state.decoder = H264Decoder()

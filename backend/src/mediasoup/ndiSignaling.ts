@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { MediasoupRouter } from './router';
 import { NdiBridgeConfig } from './config';
 import { types as mediasoupTypes } from 'mediasoup';
+import * as dgram from 'dgram';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -146,7 +147,7 @@ export class NdiSignaling {
     socket.emit('active-streams', { streams });
 
     // Handle consume-stream (bridge requests a Consumer)
-    socket.on('consume-stream', async ({ producerId }: { producerId: string }) => {
+    socket.on('consume-stream', async ({ producerId, rtpPort }: { producerId: string, rtpPort?: number }) => {
       try {
         const entry = session.plainTransports.get(producerId);
         if (!entry) {
@@ -159,6 +160,17 @@ export class NdiSignaling {
           socket.emit('consumer-error', { producerId, error: 'producer not found' });
           return;
         }
+
+        // Explicitly connect the PlainTransport to the bridge's RTP endpoint.
+        // Comedia mode alone may not set the remote endpoint in time for
+        // consume(), so we connect explicitly using the bridge socket's IP
+        // and the port the bridge is listening on.
+        const bridgeIp = socket.handshake?.address || '127.0.0.1';
+        const remotePort = rtpPort ?? entry.rtpPort;
+        await entry.transport.connect({
+          ip: bridgeIp,
+          port: remotePort,
+        });
 
         const rtpCapabilities = this.router.getRouterCapabilities();
         const consumer = await entry.transport.consume({

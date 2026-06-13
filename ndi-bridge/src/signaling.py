@@ -39,11 +39,15 @@ class SignalingClient:
             transports=["websocket", "polling"],
         )
 
-    def emit_consume_stream(self, producer_id: str):
-        """Request the backend to create a Consumer for the given producer."""
+    def emit_consume_stream(self, producer_id: str, rtp_port: int = 0):
+        """Request the backend to create a Consumer for the given producer.
+
+        Sends the bridge's RTP listening port so the backend can explicitly
+        connect() the PlainTransport to this bridge instance.
+        """
         self.sio.emit(
             "consume-stream",
-            {"producerId": producer_id},
+            {"producerId": producer_id, "rtpPort": rtp_port},
             namespace=NDI_NAMESPACE,
         )
 
