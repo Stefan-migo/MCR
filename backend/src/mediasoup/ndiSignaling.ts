@@ -163,12 +163,14 @@ export class NdiSignaling {
 
         // Connect the PlainTransport to the bridge's RTP endpoint so that
         // the Consumer (created below) sends its RTP to the bridge.
+        // rtcpPort is required when rtcpMux is disabled (port+1 by convention).
         const bridgeIp = rtpIp || '127.0.0.1';
         const remotePort = rtpPort ?? entry.rtpPort;
-        console.log(`[NDI] Connecting PlainTransport to ${bridgeIp}:${remotePort}`);
+        console.log(`[NDI] Connecting PlainTransport to ${bridgeIp}:${remotePort} (rtcp :${remotePort + 1})`);
         await entry.transport.connect({
           ip: bridgeIp,
           port: remotePort,
+          rtcpPort: remotePort + 1,
         });
 
         const rtpCapabilities = this.router.getRouterCapabilities();
