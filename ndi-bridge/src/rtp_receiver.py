@@ -63,9 +63,18 @@ class RtpReceiver:
     # ------------------------------------------------------------------
 
     def _recv_loop(self, callback: Callable[[dict], None]):
+        pkt_count = 0
         while self.running:
             try:
                 data, addr = self.sock.recvfrom(65535)
+                pkt_count += 1
+                if pkt_count <= 3:
+                    print(f"[RTP] Packet #{pkt_count} from {addr}, size={len(data)}B, "
+                          f"payload_type={(data[1] & 0x7F) if len(data) > 1 else '?'}, "
+                          f"seq={(data[2] << 8 | data[3]) if len(data) > 3 else '?'}")
+                if pkt_count % 500 == 0:
+                    print(f"[RTP] Received {pkt_count} packets so far")
+
                 nals = self._depacketize_h264(data)
                 for nal in nals:
                     callback(nal)
