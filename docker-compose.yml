@@ -22,8 +22,10 @@ services:
       context: ./ndi-bridge
       dockerfile: Dockerfile
     environment:
-      - BACKEND_URL=http://backend:3001
-      - NDI_BRIDGE_ENABLED=true
+      - NDI_BACKEND_URL=http://backend:3001
+      - NDI_SOURCE_PREFIX=MCR-
+      - NDI_MAX_STREAMS=8
+      - NDI_LOG_LEVEL=INFO
     depends_on:
       - backend
     networks:
