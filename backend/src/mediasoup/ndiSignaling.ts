@@ -147,7 +147,7 @@ export class NdiSignaling {
     socket.emit('active-streams', { streams });
 
     // Handle consume-stream (bridge requests a Consumer)
-    socket.on('consume-stream', async ({ producerId, rtpPort }: { producerId: string, rtpPort?: number }) => {
+    socket.on('consume-stream', async ({ producerId, rtpPort, rtpIp }: { producerId: string, rtpPort?: number, rtpIp?: string }) => {
       try {
         const entry = session.plainTransports.get(producerId);
         if (!entry) {
@@ -161,12 +161,11 @@ export class NdiSignaling {
           return;
         }
 
-        // Explicitly connect the PlainTransport to the bridge's RTP endpoint.
-        // Comedia mode alone may not set the remote endpoint in time for
-        // consume(), so we connect explicitly using the bridge socket's IP
-        // and the port the bridge is listening on.
-        const bridgeIp = socket.handshake?.address || '127.0.0.1';
+        // Connect the PlainTransport to the bridge's RTP endpoint so that
+        // the Consumer (created below) sends its RTP to the bridge.
+        const bridgeIp = rtpIp || '127.0.0.1';
         const remotePort = rtpPort ?? entry.rtpPort;
+        console.log(`[NDI] Connecting PlainTransport to ${bridgeIp}:${remotePort}`);
         await entry.transport.connect({
           ip: bridgeIp,
           port: remotePort,
