@@ -145,6 +145,43 @@ export class NdiSignaling {
 
     socket.emit('active-streams', { streams });
 
+    // Handle consume-stream (bridge requests a Consumer)
+    socket.on('consume-stream', async ({ producerId }: { producerId: string }) => {
+      try {
+        const entry = session.plainTransports.get(producerId);
+        if (!entry) {
+          socket.emit('consumer-error', { producerId, error: 'transport not found' });
+          return;
+        }
+
+        const producer = this.router.getProducer(producerId);
+        if (!producer) {
+          socket.emit('consumer-error', { producerId, error: 'producer not found' });
+          return;
+        }
+
+        const rtpCapabilities = this.router.getRouterCapabilities();
+        const consumer = await entry.transport.consume({
+          producerId,
+          rtpCapabilities,
+          paused: false,
+        });
+
+        socket.emit('consumer-ready', { producerId });
+
+        consumer.on('producerclose', () => {
+          socket.emit('consumer-closed', { producerId });
+        });
+
+        consumer.on('transportclose', () => {
+          socket.emit('consumer-closed', { producerId });
+        });
+      } catch (error: any) {
+        console.error(`[NDI] Error creating consumer for ${producerId}:`, error);
+        socket.emit('consumer-error', { producerId, error: error.message || 'consume failed' });
+      }
+    });
+
     // Handle bridge disconnect
     socket.on('disconnect', () => {
       this.handleBridgeDisconnect(socket);

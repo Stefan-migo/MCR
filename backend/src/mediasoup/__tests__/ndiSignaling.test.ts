@@ -26,6 +26,14 @@ function makeMockTransport(port: number) {
   };
 }
 
+function makeMockConsumer(id: string) {
+  return {
+    id,
+    on: jest.fn(),
+    resume: jest.fn(),
+  };
+}
+
 interface CapturedHandlers {
   onConnection: Function | null;
   onNewProducer: Function | null;
@@ -42,6 +50,7 @@ function setupSignaling() {
   const createPlainTransport = jest.fn();
   const getVideoProducers = jest.fn();
   const getRouterCapabilities = jest.fn().mockReturnValue({ codecs: [] });
+  const getProducer = jest.fn();
 
   const handlers: CapturedHandlers = { onConnection: null, onNewProducer: null, onProducerClosed: null };
 
@@ -62,6 +71,7 @@ function setupSignaling() {
     getVideoProducers,
     createPlainTransport,
     getRouterCapabilities,
+    getProducer,
   } as any;
 
   const config = {
@@ -72,7 +82,7 @@ function setupSignaling() {
   const signaling = new NdiSignaling(io, router, config);
   signaling.init();
 
-  return { signaling, socketEmit, socketOn, createPlainTransport, getVideoProducers, getRouterCapabilities, handlers, routerOn };
+  return { signaling, socketEmit, socketOn, createPlainTransport, getVideoProducers, getRouterCapabilities, getProducer, handlers, routerOn };
 }
 
 /**
@@ -313,5 +323,95 @@ describe('NdiSignaling — multiple concurrent bridges (R-006)', () => {
 
     expect(signaling.getBridgeSession('test-socket')).toBeUndefined();
     expect(signaling.getBridgeSession('bridge-b')).toBeDefined();
+  });
+});
+
+describe('NdiSignaling — consume-stream creates a Consumer (R-009)', () => {
+  it('should call transport.consume and emit consumer-ready', async () => {
+    const { socketEmit, socketOn, getVideoProducers, createPlainTransport, getProducer, handlers } = setupSignaling();
+
+    const consumerMock = makeMockConsumer('consumer-1');
+    const transportMock = {
+      ...makeMockTransport(20001),
+      consume: jest.fn().mockResolvedValue(consumerMock),
+    };
+
+    getVideoProducers.mockReturnValue([makeMockProducer('prod-1', 'video', 'video/H264')]);
+    createPlainTransport.mockResolvedValue(transportMock);
+    getProducer.mockReturnValue(makeMockProducer('prod-1', 'video', 'video/H264'));
+
+    await simulateConnect(handlers, socketEmit, socketOn);
+
+    // Get the consume-stream handler
+    const consumeHandler = socketOn.mock.calls.find((c: any[]) => c[0] === 'consume-stream')?.[1];
+    expect(consumeHandler).toBeDefined();
+
+    // Clear emits from connection
+    socketEmit.mockClear();
+
+    await consumeHandler({ producerId: 'prod-1' });
+
+    expect(transportMock.consume).toHaveBeenCalledWith({
+      producerId: 'prod-1',
+      rtpCapabilities: { codecs: [] },
+      paused: false,
+    });
+    expect(socketEmit).toHaveBeenCalledWith('consumer-ready', { producerId: 'prod-1' });
+    expect(consumerMock.on).toHaveBeenCalledWith('producerclose', expect.any(Function));
+    expect(consumerMock.on).toHaveBeenCalledWith('transportclose', expect.any(Function));
+  });
+
+  it('should emit consumer-error when transport not found for producerId', async () => {
+    const { socketEmit, socketOn, getVideoProducers, createPlainTransport, handlers } = setupSignaling();
+
+    getVideoProducers.mockReturnValue([]);
+    createPlainTransport.mockResolvedValue(makeMockTransport(20001));
+
+    await simulateConnect(handlers, socketEmit, socketOn);
+
+    const consumeHandler = socketOn.mock.calls.find((c: any[]) => c[0] === 'consume-stream')?.[1];
+    expect(consumeHandler).toBeDefined();
+
+    socketEmit.mockClear();
+
+    // Unknown producerId — no transport in session
+    await consumeHandler({ producerId: 'unknown-prod' });
+
+    expect(socketEmit).toHaveBeenCalledWith('consumer-error', {
+      producerId: 'unknown-prod',
+      error: 'transport not found',
+    });
+  });
+
+  it('should emit consumer-ready after successful Consumer creation', async () => {
+    const { socketEmit, socketOn, getVideoProducers, createPlainTransport, getProducer, handlers } = setupSignaling();
+
+    const consumerMock = makeMockConsumer('consumer-1');
+    const transportMock = {
+      ...makeMockTransport(20001),
+      consume: jest.fn().mockResolvedValue(consumerMock),
+    };
+
+    getVideoProducers.mockReturnValue([makeMockProducer('prod-1', 'video', 'video/H264')]);
+    createPlainTransport.mockResolvedValue(transportMock);
+    getProducer.mockReturnValue(makeMockProducer('prod-1', 'video', 'video/H264'));
+
+    await simulateConnect(handlers, socketEmit, socketOn);
+
+    const consumeHandler = socketOn.mock.calls.find((c: any[]) => c[0] === 'consume-stream')?.[1];
+    expect(consumeHandler).toBeDefined();
+
+    socketEmit.mockClear();
+
+    await consumeHandler({ producerId: 'prod-1' });
+
+    // Verify consumer-ready was emitted AFTER consume succeeded
+    const readyCalls = socketEmit.mock.calls.filter((c: any[]) => c[0] === 'consumer-ready');
+    expect(readyCalls).toHaveLength(1);
+    expect(readyCalls[0][1]).toEqual({ producerId: 'prod-1' });
+
+    // Verify no error was emitted
+    const errorCalls = socketEmit.mock.calls.filter((c: any[]) => c[0] === 'consumer-error');
+    expect(errorCalls).toHaveLength(0);
   });
 });

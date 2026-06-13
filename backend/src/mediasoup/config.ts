@@ -143,7 +143,7 @@ export const mediasoupConfig = {
     enabled: process.env.NDI_BRIDGE_ENABLED === 'true',
     streamDiscovery: true,
     plainTransport: {
-      listenIp: '127.0.0.1',
+      listenIp: '0.0.0.0',
       portRangeStart: parseInt(process.env.PLAIN_TRANSPORT_PORT_RANGE_START || '20000', 10),
       portRangeEnd: parseInt(process.env.PLAIN_TRANSPORT_PORT_RANGE_END || '21000', 10),
     },
