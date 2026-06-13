@@ -173,8 +173,17 @@ class StreamManager:
             if not nal_data:
                 return
 
+            if not hasattr(state, '_nal_count'):
+                state._nal_count = 0
+            state._nal_count += 1
+            if state._nal_count % 100 == 0:
+                print(f"[Pipeline] {producer_id}: received {state._nal_count} NALs, "
+                      f"decoded {state.decoder.frames_decoded} frames")
+
             # Decode NAL → VideoFrame(s)
+            frame_count = 0
             for frame in state.decoder.decode(nal_data):
+                frame_count += 1
                 # Convert decoded frame (YUV) to BGRA numpy array
                 img = frame.to_ndarray(format="bgr24")
 
@@ -193,8 +202,13 @@ class StreamManager:
                 )
                 state._last_frame_time = now
 
+            if state._nal_count == 1:
+                print(f"[Pipeline] {producer_id}: first NAL processed, frames decoded this packet: {frame_count}")
+
         except Exception as e:
             print(f"[Pipeline] Error processing NAL for {producer_id}: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ------------------------------------------------------------------
     # Cleanup
