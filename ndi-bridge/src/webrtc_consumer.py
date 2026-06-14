@@ -161,14 +161,10 @@ class WebRtcConsumer:
             dtls_role="passive",  # server is passive (actpass), client is active
         )
 
-        # Set as remote description (the "answer" from the server)
+        # Set as remote description (the server's transport acts as the answer)
         await self.pc.setRemoteDescription(
-            RTCSessionDescription(sdp=remote_sdp, type="offer"),
+            RTCSessionDescription(sdp=remote_sdp, type="answer"),
         )
-
-        # Create answer
-        answer = await self.pc.createAnswer()
-        await self.pc.setLocalDescription(answer)
 
         print(f"[WebRTC] Connection setup complete")
 
