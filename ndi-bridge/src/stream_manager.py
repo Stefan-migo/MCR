@@ -145,12 +145,17 @@ class StreamManager:
             self.remove_stream(producer_id)
             return
 
-        # Connect the WebRTC transport with our DTLS fingerprint
+        # Connect the WebRTC transport with our DTLS fingerprint.
+        # local_fingerprint format: "sha-256 AA:BB:CC:DD:..."
+        # mediasoup expects: algorithm="sha-256", value="AA:BB:CC:DD:..."
+        fp_parts = (consumer.local_fingerprint or "").split(" ", 1)
+        fp_algorithm = fp_parts[0] if len(fp_parts) > 0 else "sha-256"
+        fp_value = fp_parts[1] if len(fp_parts) > 1 else fp_parts[0]
         dtls_params = {
             "role": "client",
             "fingerprints": [{
-                "algorithm": "sha-256",
-                "value": consumer.local_fingerprint,
+                "algorithm": fp_algorithm,
+                "value": fp_value,
             }],
         }
         connect_result = self.signaling.emit_ack(
