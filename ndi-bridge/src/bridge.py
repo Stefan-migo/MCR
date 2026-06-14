@@ -1,8 +1,8 @@
 """NDI Bridge — main entry point.
 
-Loads configuration, establishes a Socket.io connection to the backend
-/ndi-bridge namespace, wires stream lifecycle event handlers, serves a
-health check endpoint, and runs until SIGINT/SIGTERM.
+Connects to the backend's main Socket.io namespace, listens for
+device events, and starts WebRTC → NDI pipelines for each
+video producer.
 """
 
 import json
@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import NoReturn
 
 from .config import BridgeConfig
 from .signaling import SignalingClient
@@ -38,7 +37,7 @@ def _start_health_check(manager: StreamManager, port: int = 9999):
                 self.end_headers()
 
         def log_message(self, fmt, *args):
-            pass  # silence HTTP request logs
+            pass
 
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -63,49 +62,30 @@ def main():
         source_prefix=config.source_prefix,
     )
 
-    # ------------------------------------------------------------------
     # Wire event handlers
-    # ------------------------------------------------------------------
-
     signaling.on("stream-started", manager.on_stream_started)
     signaling.on("stream-stopped", manager.on_stream_stopped)
-    signaling.on("consumer-ready", manager.on_consumer_ready)
-    signaling.on("consumer-closed", manager.on_consumer_closed)
-    def _on_active_streams(data: dict):
-        """Handle active-streams — start pipeline for each existing stream."""
-        streams = data.get("streams", [])
-        print(f"[Bridge] Active streams: {len(streams)}")
-        for stream in streams:
-            manager.on_stream_started(stream)
-
-    # Log consumer errors from the backend
-    def _on_consumer_error(data: dict):
-        pid = data.get("producerId", "?")
-        error = data.get("error", "unknown")
-        print(f"[Bridge] Consumer error for {pid}: {error}")
-
-    signaling.on("consumer-error", _on_consumer_error)
 
     # Log connection lifecycle
-    signaling.on(
-        "connect",
-        lambda: print("[Bridge] Connected to backend"),
-    )
-    signaling.on(
-        "disconnect",
-        lambda: print("[Bridge] Disconnected from backend"),
-    )
+    signaling.on("connect", lambda: print("[Bridge] Connected to backend"))
+    signaling.on("disconnect", lambda: print("[Bridge] Disconnected"))
 
-    # ------------------------------------------------------------------
-    # Signal handling for graceful shutdown
-    # ------------------------------------------------------------------
+    # Start health check
+    _start_health_check.start_time = time.time()
+    _start_health_check(manager)
 
+    # Connect to the backend's main namespace
+    print(f"[Bridge] Connecting to {config.backend_url} ...")
+    signaling.connect()
+    print("[Bridge] Connected. Waiting for streams...")
+
+    # Handle shutdown
     shutdown_requested = False
 
     def shutdown(sig, frame):
         nonlocal shutdown_requested
         if shutdown_requested:
-            return  # already shutting down
+            return
         shutdown_requested = True
         print("\n[Bridge] Shutting down...")
         manager.cleanup_all()
@@ -114,26 +94,10 @@ def main():
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
-    if hasattr(signal, 'SIGTERM'):  # SIGTERM is Unix-only
+    if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, shutdown)
 
-    # ------------------------------------------------------------------
-    # Start health check HTTP server
-    # ------------------------------------------------------------------
-
-    _start_health_check.start_time = time.time()
-    _start_health_check(manager)
-
-    # ------------------------------------------------------------------
-    # Connect and wait
-    # ------------------------------------------------------------------
-
-    print(f"[Bridge] Connecting to {config.backend_url}/ndi-bridge ...")
-    signaling.connect()
-    print("[Bridge] Connected. Waiting for streams...")
-
-    # Block indefinitely until a signal arrives
-    # Note: signal.pause() is Unix-only, use Event().wait() for Windows compat
+    # Block until signal
     import threading as _threading
     _shutdown_event = _threading.Event()
     _shutdown_event.wait()

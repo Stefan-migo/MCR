@@ -2,42 +2,24 @@ import { Server, Socket } from 'socket.io';
 import { MediasoupRouter } from './router';
 import { NdiBridgeConfig } from './config';
 import { types as mediasoupTypes } from 'mediasoup';
-import * as dgram from 'dgram';
 
 // ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
 
-export interface RtpStreamInfo {
-  producerId: string;
-  codec: {
-    mimeType: string;
-    payloadType: number;
-    clockRate: number;
-    channels?: number;
-    parameters?: any;
-  };
-  rtpEndpoint: {
-    ip: string;
-    port: number;
-  };
+export interface StreamCodec {
+  mimeType: string;
+  payloadType: number;
+  clockRate: number;
+  channels?: number;
+  parameters?: any;
 }
 
 export interface BridgeSession {
   socketId: string;
   socket: Socket;
-  plainTransports: Map<string, {
-    transport: mediasoupTypes.PlainTransport;
-    producerId: string;
-    rtpPort: number;
-    codec: {
-      mimeType: string;
-      clockRate: number;
-      payloadType: number;
-      channels?: number;
-      parameters?: any;
-    };
-  }>;
+  transport: mediasoupTypes.WebRtcTransport | null;
+  consumers: Map<string, mediasoupTypes.Consumer>;
   createdAt: Date;
 }
 
@@ -58,14 +40,9 @@ export class NdiSignaling {
     this.bridgeSessions = new Map();
   }
 
-  // -----------------------------------------------------------------------
-  // Public: Init — register namespace + subscribe to router events
-  // -----------------------------------------------------------------------
-
   init(): void {
     const namespace = this.io.of('/ndi-bridge');
 
-    // Auth middleware placeholder (accept all for now)
     namespace.use((_socket, next) => {
       next();
     });
@@ -76,7 +53,6 @@ export class NdiSignaling {
       });
     });
 
-    // Subscribe to router producer lifecycle events
     this.router.on('new-producer', (producer: mediasoupTypes.Producer) => {
       return this.onNewProducer(producer).catch((error) => {
         console.error('[NDI] Error handling new producer:', error);
@@ -89,10 +65,6 @@ export class NdiSignaling {
       });
     });
   }
-
-  // -----------------------------------------------------------------------
-  // Public: Session accessors
-  // -----------------------------------------------------------------------
 
   getBridgeSession(socketId: string): BridgeSession | undefined {
     return this.bridgeSessions.get(socketId);
@@ -109,94 +81,85 @@ export class NdiSignaling {
   private async handleConnection(socket: Socket): Promise<void> {
     console.log(`[NDI] Bridge connected: ${socket.id}`);
 
+    // Create a WebRtcTransport for this bridge (consuming media like a browser)
+    const transport = await this.router.createWebRtcTransport();
+    const iceCandidates = transport.iceCandidates;
+    const dtlsParameters = transport.dtlsParameters;
+
     const session: BridgeSession = {
       socketId: socket.id,
       socket,
-      plainTransports: new Map(),
+      transport,
+      consumers: new Map(),
       createdAt: new Date(),
     };
     this.bridgeSessions.set(socket.id, session);
 
-    // Discover existing video producers and create PlainTransports
+    // Send transport params + active producers to the bridge
     const videoProducers = this.router.getVideoProducers();
-    const streams: RtpStreamInfo[] = [];
+    const streams = videoProducers.map((p) => ({
+      producerId: p.id,
+      codec: p.rtpParameters.codecs[0] ? {
+        mimeType: p.rtpParameters.codecs[0].mimeType,
+        payloadType: p.rtpParameters.codecs[0].payloadType,
+        clockRate: p.rtpParameters.codecs[0].clockRate,
+      } : null,
+    }));
 
-    for (const producer of videoProducers) {
-      try {
-        const result = await this.createBridgePlainTransport(producer);
-        session.plainTransports.set(producer.id, {
-          transport: result.transport,
-          producerId: producer.id,
-          rtpPort: result.rtpPort,
-          codec: result.codec,
-        });
-        streams.push({
-          producerId: producer.id,
-          codec: result.codec,
-          rtpEndpoint: { ip: result.ip, port: result.rtpPort },
-        });
-      } catch (error: any) {
-        console.error(`[NDI] Failed to create PlainTransport for producer ${producer.id}:`, error);
-        socket.emit('error', {
-          code: 'PORT_EXHAUSTION',
-          message: error.message || 'Failed to create transport',
-        });
-      }
-    }
+    socket.emit('transport-created', {
+      id: transport.id,
+      iceParameters: transport.iceParameters,
+      iceCandidates: transport.iceCandidates,
+      dtlsParameters: transport.dtlsParameters,
+    });
 
     socket.emit('active-streams', { streams });
 
-    // Handle consume-stream (bridge requests a Consumer)
-    socket.on('consume-stream', async ({ producerId, rtpPort, rtpIp }: { producerId: string, rtpPort?: number, rtpIp?: string }) => {
+    // Handle DTLS connect from bridge
+    socket.on('connect-webrtc', async (data: { dtlsParameters: any }) => {
       try {
-        const entry = session.plainTransports.get(producerId);
-        if (!entry) {
-          socket.emit('consumer-error', { producerId, error: 'transport not found' });
-          return;
-        }
+        await transport.connect({ dtlsParameters: data.dtlsParameters });
+        console.log(`[NDI] WebRTC transport connected: ${socket.id}`);
+        socket.emit('transport-connected', { success: true });
+      } catch (error: any) {
+        console.error(`[NDI] WebRTC connect error:`, error);
+        socket.emit('transport-connected', { success: false, error: error.message });
+      }
+    });
 
+    // Handle consume-stream — bridge requests a Consumer for a producer
+    socket.on('consume-stream', async ({ producerId }: { producerId: string }) => {
+      try {
         const producer = this.router.getProducer(producerId);
         if (!producer) {
           socket.emit('consumer-error', { producerId, error: 'producer not found' });
           return;
         }
 
-        // Connect the PlainTransport to the bridge's RTP endpoint.
-        // With rtcpMux enabled, a single port handles both RTP and RTCP.
-        const bridgeIp = rtpIp || '127.0.0.1';
-        const remotePort = rtpPort ?? entry.rtpPort;
-        console.log(`[NDI] Connecting PlainTransport to ${bridgeIp}:${remotePort}`);
-        await entry.transport.connect({
-          ip: bridgeIp,
-          port: remotePort,
-        });
-
-        // Build RTP capabilities with H.264 only (no RTX, no VP8/VP9).
-        const routerCaps = this.router.getRouterCapabilities();
-        const bridgeCaps = {
-          codecs: (routerCaps.codecs || []).filter(
-            (c: any) => c.mimeType === 'video/H264'
-          ),
-          headerExtensions: (routerCaps.headerExtensions || []).filter(
-            (h: any) => h.kind === 'video'
-          ),
-        };
-
-        const consumer = await entry.transport.consume({
+        const rtpCapabilities = this.router.getRouterCapabilities();
+        const consumer = await transport.consume({
           producerId,
-          rtpCapabilities: bridgeCaps,
+          rtpCapabilities,
           paused: false,
         });
 
         await consumer.resume();
+        session.consumers.set(consumer.id, consumer);
 
-        socket.emit('consumer-ready', { producerId });
+        socket.emit('consumer-ready', {
+          producerId,
+          consumerId: consumer.id,
+          kind: consumer.kind,
+          rtpParameters: consumer.rtpParameters,
+        });
 
         consumer.on('producerclose', () => {
+          session.consumers.delete(consumer.id);
           socket.emit('consumer-closed', { producerId });
         });
 
         consumer.on('transportclose', () => {
+          session.consumers.delete(consumer.id);
           socket.emit('consumer-closed', { producerId });
         });
       } catch (error: any) {
@@ -221,13 +184,12 @@ export class NdiSignaling {
     const session = this.bridgeSessions.get(socket.id);
     if (!session) return;
 
-    // Close all PlainTransports for this session
-    for (const [, entry] of session.plainTransports) {
-      try {
-        entry.transport.close();
-      } catch (error) {
-        console.error(`[NDI] Error closing transport for producer ${entry.producerId}:`, error);
-      }
+    for (const [, consumer] of session.consumers) {
+      try { consumer.close(); } catch (_) { /* ignore */ }
+    }
+
+    if (session.transport) {
+      try { session.transport.close(); } catch (_) { /* ignore */ }
     }
 
     this.bridgeSessions.delete(socket.id);
@@ -238,31 +200,17 @@ export class NdiSignaling {
   // -----------------------------------------------------------------------
 
   private async onNewProducer(producer: mediasoupTypes.Producer): Promise<void> {
-    // Only handle video producers — skip audio-only
     if (producer.kind !== 'video') return;
 
     for (const [, session] of this.bridgeSessions) {
-      try {
-        const result = await this.createBridgePlainTransport(producer);
-        session.plainTransports.set(producer.id, {
-          transport: result.transport,
-          producerId: producer.id,
-          rtpPort: result.rtpPort,
-          codec: result.codec,
-        });
-
-        session.socket.emit('stream-started', {
-          producerId: producer.id,
-          codec: result.codec,
-          rtpEndpoint: { ip: result.ip, port: result.rtpPort },
-        });
-      } catch (error: any) {
-        console.error(`[NDI] Failed to create PlainTransport for producer ${producer.id}:`, error);
-        session.socket.emit('error', {
-          code: 'PORT_EXHAUSTION',
-          message: error.message || 'Failed to create transport',
-        });
-      }
+      session.socket.emit('stream-started', {
+        producerId: producer.id,
+        codec: producer.rtpParameters.codecs[0] ? {
+          mimeType: producer.rtpParameters.codecs[0].mimeType,
+          payloadType: producer.rtpParameters.codecs[0].payloadType,
+          clockRate: producer.rtpParameters.codecs[0].clockRate,
+        } : null,
+      });
     }
   }
 
@@ -272,52 +220,15 @@ export class NdiSignaling {
 
   private async onProducerClosed(producerId: string): Promise<void> {
     for (const [, session] of this.bridgeSessions) {
-      const entry = session.plainTransports.get(producerId);
-      if (!entry) continue;
-
-      try {
-        entry.transport.close();
-      } catch (error) {
-        console.error(`[NDI] Error closing transport for producer ${producerId}:`, error);
+      // Find and close any consumer for this producer
+      for (const [consumerId, consumer] of session.consumers) {
+        if (consumer.producerId === producerId) {
+          try { consumer.close(); } catch (_) { /* ignore */ }
+          session.consumers.delete(consumerId);
+        }
       }
 
-      session.plainTransports.delete(producerId);
       session.socket.emit('stream-stopped', { producerId, reason: 'producer-closed' });
     }
-  }
-
-  // -----------------------------------------------------------------------
-  // Private: PlainTransport creation helper
-  // -----------------------------------------------------------------------
-
-  private async createBridgePlainTransport(
-    producer: mediasoupTypes.Producer,
-  ): Promise<{
-    transport: mediasoupTypes.PlainTransport;
-    ip: string;
-    rtpPort: number;
-    codec: { mimeType: string; clockRate: number; payloadType: number; channels?: number; parameters?: any };
-  }> {
-    const transport = await this.router.createPlainTransport({
-      listenIp: { ip: this.config.plainTransport.listenIp },
-      rtcpMux: true,
-      comedia: false,
-    });
-
-    const firstCodec = producer.rtpParameters.codecs[0];
-    const codec = {
-      mimeType: firstCodec.mimeType,
-      clockRate: firstCodec.clockRate,
-      payloadType: firstCodec.payloadType,
-      channels: (firstCodec as any).channels,
-      parameters: firstCodec.parameters,
-    };
-
-    return {
-      transport,
-      ip: transport.tuple.localIp,
-      rtpPort: transport.tuple.localPort,
-      codec,
-    };
   }
 }

@@ -1,69 +1,46 @@
+"""Stream manager — orchestrates the WebRTC → NDI pipeline.
+
+Manages per-stream lifecycle: wait for producer → create WebRTC consumer →
+connect → consume → decode → NDI output → cleanup on stop.
+"""
+
+import threading
 import time
 from typing import Dict, Optional
 
 import numpy as np
 
-from .decoder import H264Decoder
 from .ndi_sender import NdiSender
-from .rtp_receiver import RtpReceiver
+from .webrtc_consumer import WebRtcConsumer
 
 
 class StreamState:
-    """Holds all resources for a single active stream pipeline.
+    """Holds all resources for a single stream.
 
     Attributes
     ----------
     producer_id : str
         Mediasoup producer identifier.
-    backend_ip : str
-        Backend hostname / IP for UDP comedia handshake.
-    rtp_port : int
-        PlainTransport UDP port.
     source_name : str
         NDI source display name.
-    receiver : RtpReceiver or None
-        UDP socket receiver for this stream.
-    decoder : H264Decoder or None
-        H.264 decoder for this stream.
     sender : NdiSender or None
-        NDI output sender for this stream.
-    consumer_ready : bool
-        Whether the backend has confirmed the Consumer is active.
-    fps : float
-        Estimated frames per second for this stream.
-    _last_frame_time : float
-        Timestamp of the last frame sent (for pacing).
+        NDI output sender.
+    consumer : WebRtcConsumer or None
+        WebRTC consumer receiving frames.
     """
 
-    def __init__(
-        self,
-        producer_id: str,
-        backend_ip: str,
-        rtp_port: int,
-        source_name: str,
-    ):
+    def __init__(self, producer_id: str, source_name: str):
         self.producer_id = producer_id
-        self.backend_ip = backend_ip
-        self.rtp_port = rtp_port
         self.source_name = source_name
-        self.receiver: Optional[RtpReceiver] = None
-        self.decoder: Optional[H264Decoder] = None
         self.sender: Optional[NdiSender] = None
-        self.consumer_ready = False
-        self.fps: float = 30.0
+        self.consumer: Optional[WebRtcConsumer] = None
         self._last_frame_time: float = 0.0
+        self._fps: float = 30.0
+        self._frame_count: int = 0
 
 
 class StreamManager:
-    """Orchestrates per-stream lifecycle: start → comedia → consume → NDI → stop.
-
-    Enforces max_streams limit. Tracks all active streams in a dict keyed by
-    producer_id. Each stream follows:
-        1. RtpReceiver created, dummy packet sent (comedia handshake)
-        2. consume-stream event emitted to backend
-        3. NdiSender created for output
-        4. On stop: receiver/sender cleaned up
-    """
+    """Orchestrates per-stream lifecycle: start → WebRTC → NDI → stop."""
 
     def __init__(
         self,
@@ -75,153 +52,148 @@ class StreamManager:
         self.signaling = signaling
         self.max_streams = max_streams
         self.source_prefix = source_prefix
-
-    # ------------------------------------------------------------------
-    # Event handlers (called from bridge.py wiring)
-    # ------------------------------------------------------------------
+        self._rtp_capabilities: Optional[dict] = None
 
     def on_stream_started(self, data: dict):
-        """Handle a new stream from the backend.
-
-        Creates UDP receiver, sends comedia handshake, requests consumer,
-        and creates NDI source.
-        """
+        """Handle a new video producer — start WebRTC → NDI pipeline."""
         producer_id = data.get("producerId")
         if not producer_id:
             print("[Manager] stream-started missing producerId")
             return
 
         if len(self.streams) >= self.max_streams:
-            print(f"[Manager] Max streams ({self.max_streams}) reached, skipping {producer_id}")
+            print(f"[Manager] Max streams ({self.max_streams}), skipping {producer_id}")
             return
 
-        rtp_port = data.get("rtpEndpoint", {}).get("port")
-        if not rtp_port:
-            print(f"[Manager] stream-started missing rtpEndpoint.port for {producer_id}")
-            return
-
-        backend_ip = "127.0.0.1"  # overridden in bridge.py if needed
         source_name = f"{self.source_prefix}{producer_id[:8]}"
-
-        state = StreamState(producer_id, backend_ip, rtp_port, source_name)
+        state = StreamState(producer_id, source_name)
         self.streams[producer_id] = state
 
-        # Create UDP receiver (backend will connect() to us explicitly)
-        receiver = RtpReceiver()
-        state.receiver = receiver
+        # Get RTP capabilities if we haven't yet
+        if not self._rtp_capabilities:
+            self._rtp_capabilities = self.signaling.get_rtp_capabilities()
+            print(f"[Manager] Got RTP capabilities")
 
-        # Start receiving RTP packets
-        receiver.start(lambda nal: self._on_nal_unit(producer_id, nal))
+        # Create WebRTC transport on the backend
+        transport_result = self.signaling.emit_with_ack(
+            "create-recv-transport", {},
+        )
+        if "error" in transport_result:
+            print(f"[Manager] Failed to create transport: {transport_result['error']}")
+            self.remove_stream(producer_id)
+            return
 
-        # Request Consumer from backend, passing our UDP listening IP and port
-        bridge_port = receiver.local_port
-        bridge_ip = "127.0.0.1"
-        self.signaling.emit_consume_stream(producer_id, rtp_port=bridge_port, rtp_ip=bridge_ip)
-        print(f"[Manager] Consume-stream requested for {producer_id} (bridge at {bridge_ip}:{bridge_port})")
+        transport_id = transport_result["id"]
+        print(f"[Manager] Created WebRTC transport: {transport_id}")
 
-        # Create H.264 decoder for this stream
-        state.decoder = H264Decoder()
+        # Start WebRTC consumer (aiortc) with the transport params
+        consumer = WebRtcConsumer(
+            source_name,
+            on_frame=lambda frame: self._on_frame(producer_id, frame),
+        )
+        consumer.start(transport_result)
+        state.consumer = consumer
+
+        # Wait for local DTLS fingerprint
+        time.sleep(0.3)
+        if not consumer.local_fingerprint:
+            print(f"[Manager] Warning: no DTLS fingerprint for {producer_id}")
+            time.sleep(0.5)  # wait a bit more
+
+        # Connect the WebRTC transport
+        dtls_params = {
+            "role": "client",
+            "fingerprints": [{
+                "algorithm": "sha-256",
+                "value": consumer.local_fingerprint or "",
+            }],
+        }
+        connect_result = self.signaling.emit_with_ack(
+            "connect-recv-transport",
+            {"transportId": transport_id, "dtlsParameters": dtls_params},
+        )
+        if "error" in connect_result:
+            print(f"[Manager] Failed to connect transport: {connect_result['error']}")
+            self.remove_stream(producer_id)
+            return
+        print(f"[Manager] WebRTC transport connected")
+
+        # Consume the stream
+        consume_result = self.signaling.emit_with_ack(
+            "consume-stream",
+            {
+                "transportId": transport_id,
+                "producerId": producer_id,
+                "rtpCapabilities": self._rtp_capabilities,
+            },
+        )
+        if "error" in consume_result:
+            print(f"[Manager] Failed to consume: {consume_result['error']}")
+            self.remove_stream(producer_id)
+            return
+
+        consumer_id = consume_result.get("id")
+        print(f"[Manager] Consumer created: {consumer_id}")
+
+        # Resume the consumer
+        resume_result = self.signaling.emit_with_ack(
+            "resume-consumer",
+            {"consumerId": consumer_id},
+        )
+        if "error" in resume_result:
+            print(f"[Manager] Failed to resume consumer: {resume_result['error']}")
+        else:
+            print(f"[Manager] Consumer resumed")
 
         # Create NDI source
         sender = NdiSender(source_name)
         try:
             sender.initialize()
             state.sender = sender
+            print(f"[NDI] Created source: {source_name}")
         except Exception as e:
-            print(f"[Manager] Failed to create NDI source for {producer_id}: {e}")
+            print(f"[Manager] Failed to create NDI source: {e}")
 
-    def on_stream_stopped(self, data: dict):
-        """Handle stream stop — clean up all resources."""
-        producer_id = data.get("producerId")
-        if producer_id:
-            self.remove_stream(producer_id)
-
-    def on_consumer_ready(self, data: dict):
-        """Mark a stream as ready — backend Consumer is active."""
-        producer_id = data.get("producerId")
+    def _on_frame(self, producer_id: str, frame: dict):
+        """Callback from WebRTC consumer: send frame to NDI."""
         state = self.streams.get(producer_id)
-        if state:
-            state.consumer_ready = True
-            print(f"[Manager] Consumer ready for {producer_id}")
-
-    def on_consumer_closed(self, data: dict):
-        """Handle consumer closed by backend — clean up the stream."""
-        producer_id = data.get("producerId")
-        if producer_id:
-            print(f"[Manager] Consumer closed for {producer_id}")
-            self.remove_stream(producer_id)
-
-    # ------------------------------------------------------------------
-    # RTP → NDI pipeline
-    # ------------------------------------------------------------------
-
-    def _on_nal_unit(self, producer_id: str, nal: dict):
-        """Callback from RtpReceiver: feed NAL to decoder, send frame to NDI.
-
-        Receives depacketized H.264 NAL unit data, feeds it through
-        H264Decoder (PyAV), converts decoded frames to BGRA, and
-        pushes them to the NDI sender.
-        """
-        state = self.streams.get(producer_id)
-        if not state or not state.consumer_ready:
-            return
-        if not state.decoder or not state.sender:
+        if not state or not state.sender:
             return
 
         try:
-            nal_data = nal.get("data", b"")
-            if not nal_data:
+            img = frame["data"]
+            width = frame["width"]
+            height = frame["height"]
+
+            # Frame pacing
+            now = time.time()
+            min_interval = 1.0 / max(state._fps, 1.0)
+            if now - state._last_frame_time < min_interval * 0.5:
                 return
 
-            if not hasattr(state, '_nal_count'):
-                state._nal_count = 0
-            state._nal_count += 1
-            if state._nal_count % 100 == 0:
-                print(f"[Pipeline] {producer_id}: received {state._nal_count} NALs, "
-                      f"decoded {state.decoder.frames_decoded} frames")
+            state.sender.send_frame(img, width, height, state._fps)
+            state._last_frame_time = now
+            state._frame_count += 1
 
-            # Decode NAL → VideoFrame(s)
-            frame_count = 0
-            for frame in state.decoder.decode(nal_data):
-                frame_count += 1
-                # Convert decoded frame (YUV) to BGRA numpy array
-                img = frame.to_ndarray(format="bgr24")
-
-                # Skip if frame pacing says it's too soon
-                now = time.time()
-                min_interval = 1.0 / max(state.fps, 1.0)
-                if now - state._last_frame_time < min_interval * 0.8:
-                    continue
-
-                # Send via NDI
-                state.sender.send_frame(
-                    frame=img,
-                    width=frame.width,
-                    height=frame.height,
-                    fps=state.fps,
-                )
-                state._last_frame_time = now
-
-            if state._nal_count == 1:
-                print(f"[Pipeline] {producer_id}: first NAL processed, frames decoded this packet: {frame_count}")
-
+            if state._frame_count % 150 == 0:
+                print(f"[Pipeline] {producer_id}: sent {state._frame_count} frames to NDI")
         except Exception as e:
-            print(f"[Pipeline] Error processing NAL for {producer_id}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[Pipeline] Error sending frame: {e}")
 
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
+    def on_stream_stopped(self, data: dict):
+        """Handle stream stop."""
+        producer_id = data.get("producerId")
+        if producer_id:
+            self.remove_stream(producer_id)
 
     def remove_stream(self, producer_id: str):
-        """Remove a stream and free all its resources."""
+        """Remove a stream and free all resources."""
         state = self.streams.pop(producer_id, None)
         if not state:
             return
 
-        if state.receiver:
-            state.receiver.stop()
+        if state.consumer:
+            state.consumer.stop()
         if state.sender:
             state.sender.destroy()
 
