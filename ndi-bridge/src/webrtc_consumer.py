@@ -97,21 +97,80 @@ class WebRtcConsumer:
                     await asyncio.sleep(0.1)
 
     def start(self, transport_params: dict):
-        """Start the WebRTC connection in a background thread."""
+        """Start the WebRTC connection.
+
+        Creates the PC, offer, and extracts the DTLS fingerprint
+        synchronously (blocking). The frame receive loop runs in a
+        background thread.
+        
+        After this returns, ``local_fingerprint`` is available.
+        """
         self._running = True
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        # Synchonous setup: create PC, offer, export fingerprint
+        try:
+            self._loop.run_until_complete(self._setup(transport_params))
+        except Exception as e:
+            print(f"[WebRTC] Setup error: {e}")
+            import traceback
+            traceback.print_exc()
+            return
+
+        # Frame receive runs in background
         self._thread = threading.Thread(
-            target=self._run_async, args=(transport_params,), daemon=True,
+            target=self._loop.run_forever, daemon=True,
         )
         self._thread.start()
 
-    def _run_async(self, transport_params: dict):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._connect(transport_params))
-            self._loop.run_forever()
-        except Exception as e:
-            print(f"[WebRTC] Error: {e}")
+    async def _setup(self, transport_params: dict):
+        """Set up the WebRTC connection (synchronous part)."""
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+
+        self.pc = RTCPeerConnection()
+
+        # Add a recvonly video transceiver
+        self.pc.addTransceiver("video", direction="recvonly")
+
+        # Handle incoming video track
+        @self.pc.on("track")
+        def on_track(track):
+            print(f"[WebRTC] Received {track.kind} track")
+            if track.kind == "video":
+                self._track = track
+                self._loop.create_task(self._receive_frames(track))
+
+        # Create an SDP offer to get our ICE/DTLS params
+        offer = await self.pc.createOffer()
+        await self.pc.setLocalDescription(offer)
+
+        # Extract our DTLS fingerprint from the local SDP
+        self.local_fingerprint = extract_dtls_fingerprint(
+            self.pc.localDescription.sdp,
+        )
+        print(f"[WebRTC] Local fingerprint: {self.local_fingerprint}")
+
+        # Build a remote SDP from mediasoup's transport params
+        # aiortc acts as the DTLS client ("active")
+        remote_sdp = build_remote_sdp(
+            ice_ufrag=transport_params["iceParameters"]["usernameFragment"],
+            ice_pwd=transport_params["iceParameters"]["password"],
+            ice_candidates=transport_params["iceCandidates"],
+            dtls_fingerprint=transport_params["dtlsParameters"]["fingerprints"][0],
+            dtls_role="passive",  # server is passive (actpass), client is active
+        )
+
+        # Set as remote description (the "answer" from the server)
+        await self.pc.setRemoteDescription(
+            RTCSessionDescription(sdp=remote_sdp, type="offer"),
+        )
+
+        # Create answer
+        answer = await self.pc.createAnswer()
+        await self.pc.setLocalDescription(answer)
+
+        print(f"[WebRTC] Connection setup complete")
 
     async def _close(self):
         if self.pc:

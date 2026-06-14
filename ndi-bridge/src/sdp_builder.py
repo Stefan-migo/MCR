@@ -28,7 +28,7 @@ def build_remote_sdp(
     dtls_fingerprint : dict
         DTLS fingerprint with keys 'algorithm' and 'value'.
     dtls_role : str
-        DTLS role ('auto', 'client', 'server').
+        DTLS role ('active', 'passive', 'actpass').
 
     Returns
     -------

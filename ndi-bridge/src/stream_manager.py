@@ -106,7 +106,8 @@ class StreamManager:
         transport_id = transport_result["id"]
         print(f"[Manager] Created WebRTC transport: {transport_id}")
 
-        # Start WebRTC consumer (aiortc) with the transport params
+        # Start WebRTC consumer (aiortc) with the transport params.
+        # This blocks until the local SDP + DTLS fingerprint are ready.
         consumer = WebRtcConsumer(
             source_name,
             on_frame=lambda frame: self._on_frame(producer_id, frame),
@@ -114,18 +115,18 @@ class StreamManager:
         consumer.start(transport_result)
         state.consumer = consumer
 
-        # Wait for local DTLS fingerprint
-        time.sleep(0.3)
+        # Fingerprint should be available now (start() is synchronous)
         if not consumer.local_fingerprint:
-            print(f"[Manager] Warning: no DTLS fingerprint for {producer_id}")
-            time.sleep(0.5)  # wait a bit more
+            print(f"[Manager] No DTLS fingerprint for {producer_id}, skipping")
+            self.remove_stream(producer_id)
+            return
 
-        # Connect the WebRTC transport
+        # Connect the WebRTC transport with our DTLS fingerprint
         dtls_params = {
             "role": "client",
             "fingerprints": [{
                 "algorithm": "sha-256",
-                "value": consumer.local_fingerprint or "",
+                "value": consumer.local_fingerprint,
             }],
         }
         connect_result = self.signaling.emit_ack(
