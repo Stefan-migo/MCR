@@ -1,108 +1,119 @@
-# Quick Start Guide - IP: 192.168.0.138
+# Quick Start Guide — Mobile Camera Receptor
 
-## Step 1: Generate SSL Certificates
+## Requisitos
 
-**In Git Bash:**
+- Node.js 20+
+- Python 3.11+
+- Cloudflare Tunnel (`cloudflared`) — para exponer a internet
+- NDI Tools (opcional, para NDI)
+
+## Arrancar todo (ordenado)
+
+Necesitás **4 terminales**. Arrancalas en este orden.
+
+### 1. Backend
+
 ```bash
-./generate-certs.sh 192.168.0.138
+cd backend
+NDI_BRIDGE_ENABLED=true npm run dev
 ```
 
-This will:
-- Generate `cert.pem` and `key.pem` in root directory
-- Copy certificates to `backend/` and `frontend/` directories
-
-## Step 2: Start Services
-
-### Option A: Start All Together (Recommended)
-```bash
-./start-all.sh
+Esperá a ver:
+```
+✅ Mediasoup router ready
+🚀 Backend server running on https://0.0.0.0:3001
 ```
 
-This starts both backend and frontend automatically.
+### 2. Cloudflare Tunnel — Backend
 
-### Option B: Start Separately
-
-**Terminal 1 - Backend:**
 ```bash
-./start-backend.sh
+cloudflared tunnel --url https://localhost:3001 --no-tls-verify
 ```
 
-**Terminal 2 - Frontend:**
+Esperá a ver:
+```
+https://algo.trycloudflare.com
+```
+**Copiá esa URL** → la necesitás para el frontend.
+
+### 3. Frontend
+
 ```bash
-./start-frontend.sh
+cd frontend
+export NEXT_PUBLIC_API_URL="https://algo.trycloudflare.com"
+export NEXT_PUBLIC_WS_URL="wss://algo.trycloudflare.com"
+npm run dev
 ```
 
-## Step 3: Test Backend
+> **En Windows Git Bash**: usá `export`, no `$env:`
 
-Open browser: `https://192.168.0.138:3001/health`
+**En otra terminal**, exponé el frontend para tu iPhone:
 
-Should see: `{"status":"ok"}`
+```bash
+cloudflared tunnel --url http://localhost:3000 --no-tls-verify
+```
+→ Copiá la URL: `https://otro.trycloudflare.com`
 
-## Step 4: Test Frontend
+### 4. NDI Bridge
 
-Open browser: `https://192.168.0.138:3000`
+```bash
+cd ndi-bridge
+python -m src.bridge
+```
 
-- Accept security warning
-- Landing page should load
-- Click "Dashboard" to see stream management
+Esperá a ver:
+```
+[Bridge] Connected to backend
+[Bridge] Connected. Waiting for streams...
+```
 
-## Step 5: Test Mobile Streaming
+### Desde el iPhone
 
-1. On mobile device (same WiFi):
-   - Open: `https://192.168.0.138:3000`
-   - Accept security warning
-   - Click "Mobile Stream"
-   - Allow camera permission
-   - Click "Connect"
+Abrí: `https://otro.trycloudflare.com`
+→ Conectá un stream como cámara.
 
-2. On desktop:
-   - Open: `https://192.168.0.138:3000/dashboard`
-   - Your mobile stream should appear!
+En la terminal del bridge deberías ver:
+```
+[Manager] Consume-stream requested for... (bridge at 127.0.0.1:XXXXX)
+[RTP] Packet #1 from...
+[NDI] Created source: MCR-...
+[Pipeline] ... decoded X frames
+```
 
-## Step 6: Setup OBS Browser Source
+### En Resolume / OBS
 
-1. Open OBS Studio
-2. Add → Browser Source
-3. URL: `https://192.168.0.138:3000/dashboard`
-4. Width: 1920, Height: 1080
-5. Click OK
+El source NDI aparece con nombre `MCR-...`. En Resolume: botón derecho en Sources → Add NDI Source (o Refresh).
 
-**Note:** First open the URL in Chrome/Edge to accept the certificate, then OBS will trust it.
+## Opcional: Sin Cloudflare (solo WiFi local)
 
-## Your URLs
+Si estás en la misma WiFi, no necesitás tunnels:
 
-- **Frontend**: `https://192.168.0.138:3000`
-- **Dashboard**: `https://192.168.0.138:3000/dashboard`
-- **Backend API**: `https://192.168.0.138:3001`
-- **Health Check**: `https://192.168.0.138:3001/health`
+```bash
+# Terminal 1
+cd backend && NDI_BRIDGE_ENABLED=true npm run dev
+
+# Terminal 2
+cd frontend && npm run dev
+
+# Terminal 3
+cd ndi-bridge && python -m src.bridge
+```
+
+Desde el iPhone: `https://192.168.100.11:3000` (aceptá el cert autofirmado una vez)
 
 ## Troubleshooting
 
-**Backend won't start?**
-- Check port 3001 is free: `netstat -ano | findstr :3001`
-- Regenerate certificates: `./generate-certs.sh 192.168.0.138`
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| Backend no arranca | Puerto 3001 ocupado | `netstat -ano \| findstr :3001`, matá el proceso |
+| Frontend no conecta al backend | WS_URL mal | Revisá que `NEXT_PUBLIC_WS_URL` sea `wss://...` |
+| Bridge no conecta | Backend caído o SSL | Revisá que el backend esté corriendo con HTTPS |
+| NDI offline en Resolume | No llegan frames | Revisá logs del bridge: buscá `[Pipeline] decoded` |
+| Tunnel falla con TLS | Usaste https en vez de http | Para frontend: `http://localhost:3000` (sin s) |
+| Multi-streaming | Más de 6 streams | Ajustá `NDI_MAX_STREAMS` en docker-compose |
 
-**Frontend won't start?**
-- Check port 3000 is free: `netstat -ano | findstr :3000`
-- Verify certificates exist: `ls frontend/cert.pem frontend/key.pem`
+## Enlaces
 
-**Mobile can't connect?**
-- Verify same WiFi network
-- Try accessing `https://192.168.0.138:3000` on mobile browser first
-- Check Windows Firewall allows connections
-
-**OBS shows black screen?**
-- Open dashboard URL in Chrome/Edge first
-- Accept certificate warning
-- Refresh Browser Source in OBS
-
-## Full Documentation
-
-- **Complete Testing Guide**: See `TESTING_GUIDE.md`
-- **OBS Setup**: See `Docs/OBS_BROWSER_SOURCE_SETUP.md`
-- **IP Setup**: See `SETUP_NEW_IP.md`
-
----
-
-**Ready to start?** Run `./start-all.sh` and open `https://192.168.0.138:3000` 🚀
-
+- Dashboard: `http://localhost:3000/dashboard`
+- Health Check Bridge: `http://localhost:9999/health`
+- Health Check Backend: `https://localhost:3001/health`
