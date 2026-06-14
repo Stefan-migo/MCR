@@ -53,13 +53,27 @@ class StreamManager:
         self.max_streams = max_streams
         self.source_prefix = source_prefix
         self._rtp_capabilities: Optional[dict] = None
+        self._stream_to_producer: Dict[str, str] = {}  # stream_id → producer_id
 
     def on_stream_started(self, data: dict):
-        """Handle a new video producer — start WebRTC → NDI pipeline."""
+        """Handle a new video producer — start WebRTC → NDI pipeline.
+
+        The main namespace emits ``stream-started`` with:
+            { stream: { producerId, id, clientId, deviceName, ... } }
+        """
+        # Extract producerId from either format (direct or nested in stream)
         producer_id = data.get("producerId")
+        stream_id = None
+        if not producer_id and "stream" in data:
+            stream_id = data["stream"].get("id")
+            producer_id = data["stream"].get("producerId") or stream_id
         if not producer_id:
-            print("[Manager] stream-started missing producerId")
+            print(f"[Manager] stream-started missing producerId, data keys: {list(data.keys())}")
             return
+
+        # Store stream_id → producer_id mapping for stream-ended events
+        if stream_id:
+            self._stream_to_producer[stream_id] = producer_id
 
         if len(self.streams) >= self.max_streams:
             print(f"[Manager] Max streams ({self.max_streams}), skipping {producer_id}")
@@ -181,8 +195,13 @@ class StreamManager:
             print(f"[Pipeline] Error sending frame: {e}")
 
     def on_stream_stopped(self, data: dict):
-        """Handle stream stop."""
+        """Handle stream stop (stream-stopped or stream-ended)."""
         producer_id = data.get("producerId")
+        if not producer_id:
+            # stream-ended event: { streamId } — look up the producer mapping
+            stream_id = data.get("streamId")
+            if stream_id:
+                producer_id = self._stream_to_producer.pop(stream_id, None)
         if producer_id:
             self.remove_stream(producer_id)
 

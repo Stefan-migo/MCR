@@ -65,6 +65,7 @@ def main():
     # Wire event handlers
     signaling.on("stream-started", manager.on_stream_started)
     signaling.on("stream-stopped", manager.on_stream_stopped)
+    signaling.on("stream-ended", manager.on_stream_stopped)
 
     # Log connection lifecycle
     signaling.on("connect", lambda: print("[Bridge] Connected to backend"))
