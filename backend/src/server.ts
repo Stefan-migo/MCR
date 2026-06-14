@@ -378,26 +378,29 @@ io.on('connection', (socket) => {
   socket.on('get-rtp-capabilities', (callback) => {
     try {
       const caps = mediasoupRouter.getRouterCapabilities();
-      callback({ rtpCapabilities: caps });
+      safeCallback(callback, { rtpCapabilities: caps });
     } catch (error) {
-      callback({ error: 'Failed to get RTP capabilities' });
+      safeCallback(callback, { error: 'Failed to get RTP capabilities' });
     }
   });
+
+  const safeCallback = (cb: any, result: any) => {
+    if (typeof cb === 'function') cb(result);
+  };
 
   socket.on('create-recv-transport', async (data, callback) => {
     try {
       const transport = await mediasoupRouter.createWebRtcTransport();
-      // Tag transport with client id if available
       (transport as any).appData = { ...(transport as any).appData, clientId: socket.id, role: 'recv' };
       socketRecvTransports.add(transport.id);
-      callback({
+      safeCallback(callback, {
         id: transport.id,
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters
       });
     } catch (error) {
-      callback({ error: 'Failed to create recv transport' });
+      safeCallback(callback, { error: 'Failed to create recv transport' });
     }
   });
 
@@ -405,11 +408,14 @@ io.on('connection', (socket) => {
     try {
       const { transportId, dtlsParameters } = data || {};
       const transport = mediasoupRouter.transports.get(transportId);
-      if (!transport || !('connect' in transport)) return callback({ error: 'Transport not found' });
+      if (!transport || !('connect' in transport)) {
+        safeCallback(callback, { error: 'Transport not found' });
+        return;
+      }
       await transport.connect({ dtlsParameters });
-      callback({ success: true });
+      safeCallback(callback, { success: true });
     } catch (error) {
-      callback({ error: 'Failed to connect recv transport' });
+      safeCallback(callback, { error: 'Failed to connect recv transport' });
     }
   });
 
@@ -417,13 +423,14 @@ io.on('connection', (socket) => {
     try {
       const { transportId, producerId, rtpCapabilities } = data || {};
       if (!transportId || !producerId || !rtpCapabilities) {
-        return callback({ error: 'transportId, producerId and rtpCapabilities are required' });
+        safeCallback(callback, { error: 'transportId, producerId and rtpCapabilities are required' });
+        return;
       }
 
       const consumer = await mediasoupRouter.createConsumer(transportId, producerId, rtpCapabilities);
       socketConsumers.add(consumer.id);
 
-      callback({
+      safeCallback(callback, {
         id: consumer.id,
         kind: (consumer as any).kind,
         rtpParameters: consumer.rtpParameters,
@@ -431,7 +438,7 @@ io.on('connection', (socket) => {
         producerId
       });
     } catch (error: any) {
-      callback({ error: error?.message || 'Failed to consume stream' });
+      safeCallback(callback, { error: error?.message || 'Failed to consume stream' });
     }
   });
 
@@ -439,11 +446,14 @@ io.on('connection', (socket) => {
     try {
       const { consumerId } = data || {};
       const consumer = mediasoupRouter.consumers.get(consumerId);
-      if (!consumer) return callback({ error: 'Consumer not found' });
+      if (!consumer) {
+        safeCallback(callback, { error: 'Consumer not found' });
+        return;
+      }
       await consumer.resume();
-      callback({ success: true });
+      safeCallback(callback, { success: true });
     } catch (error) {
-      callback({ error: 'Failed to resume consumer' });
+      safeCallback(callback, { error: 'Failed to resume consumer' });
     }
   });
 

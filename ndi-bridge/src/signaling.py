@@ -31,9 +31,12 @@ class SignalingClient:
     def emit_ack(self, event: str, data=None, timeout: float = 10.0) -> dict:
         """Emit an event and wait for the ack callback.
 
-        NOTE: Must be called from a BACKGROUND thread, not from the
-        Socket.io event handler thread, to avoid blocking heartbeats.
+        The _ack callback fires on the Socket.io event thread.
+        This method blocks the CALLING thread (must be bg thread).
         """
+        if not self._connected:
+            return {"error": "disconnected"}
+
         result = {}
         done = threading.Event()
 
@@ -43,7 +46,9 @@ class SignalingClient:
             done.set()
 
         self.sio.emit(event, data, callback=_ack)
-        done.wait(timeout=timeout)
+        ok = done.wait(timeout=timeout)
+        if not ok:
+            return {"error": "timeout"}
         return result
 
     def disconnect(self):

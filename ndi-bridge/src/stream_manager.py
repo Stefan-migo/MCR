@@ -80,11 +80,9 @@ class StreamManager:
         tport_id = transport["id"]
         print(f"[Manager] Created WebRTC transport: {tport_id}")
 
-        # 3. Create Consumer (before WebRTC setup — media flows when DTLS connects)
+        # 3. Create Consumer
         r = self.signaling.emit_ack("consume-stream", {
-            "transportId": tport_id,
-            "producerId": producer_id,
-            "rtpCapabilities": caps,
+            "transportId": tport_id, "producerId": producer_id, "rtpCapabilities": caps,
         })
         if "error" in r:
             print(f"[Manager] Consume error: {r}")
@@ -99,7 +97,7 @@ class StreamManager:
 
         # 5. Setup WebRTC consumer (aiortc)
         consumer = WebRtcConsumer(source_name, on_frame=lambda f: self._on_frame(producer_id, f))
-        consumer.start(transport)  # transport has iceCandidates, iceParameters, dtlsParameters
+        consumer.start(transport)
         state.consumer = consumer
 
         if not consumer.local_fingerprint:
@@ -107,7 +105,7 @@ class StreamManager:
             self.remove_stream(producer_id)
             return
 
-        # 6. Connect transport with our DTLS fingerprint
+        # 6. Connect transport
         fp = consumer.local_fingerprint.split(" ", 1)
         cr = self.signaling.emit_ack("connect-recv-transport", {
             "transportId": tport_id,
