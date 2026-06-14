@@ -96,6 +96,9 @@ class RtpReceiver:
     def _depacketize_h264(self, rtp_packet: bytes) -> list[dict]:
         """Parse RTP header and extract H.264 NAL units.
 
+        Handles single NAL units, FU-A fragmentation, STAP-A aggregation,
+        and RTX retransmission packets (strips 2-byte RTX header).
+
         Returns a list of dicts with keys: data (NAL unit bytes),
         timestamp, sequence.
         """
@@ -103,7 +106,7 @@ class RtpReceiver:
             return []
 
         # RTP header fields (first 12 bytes)
-        # payload_type = rtp_packet[1] & 0x7F
+        payload_type = rtp_packet[1] & 0x7F
         sequence_number = (rtp_packet[2] << 8) | rtp_packet[3]
         timestamp = int.from_bytes(rtp_packet[4:8], "big")
         ssrc = int.from_bytes(rtp_packet[8:12], "big")
@@ -112,21 +115,35 @@ class RtpReceiver:
         if not payload:
             return []
 
-        nal_type = payload[0] & 0x1F
+        # Check for RTX retransmission packets (payload type 127 in mediasoup).
+        # RTX payload: 2-byte original sequence number + original RTP payload.
+        # Strip the RTX header and treat the remainder as H.264 data.
+        if payload_type == 127 and len(payload) > 2:
+            original_payload = payload[2:]
+            if original_payload:
+                result = self._parse_h264_nal(original_payload, timestamp, sequence_number, ssrc)
+                if result:
+                    return result
+                # If RTX didn't parse, try as raw H.264
+                if len(original_payload) > 0 and ((original_payload[0] & 0x1F) <= 23):
+                    return [{"data": original_payload, "timestamp": timestamp, "sequence": sequence_number}]
+
+        return self._parse_h264_nal(payload, timestamp, sequence_number, ssrc)
+
+    def _parse_h264_nal(self, data: bytes, timestamp: int, sequence: int, ssrc: int = 0) -> list[dict]:
+        """Parse H.264 NAL units from raw RTP payload data."""
+        if not data:
+            return []
+
+        nal_type = data[0] & 0x1F
 
         if nal_type <= NAL_TYPE_SINGLE_MAX:
-            return [
-                {
-                    "data": payload,
-                    "timestamp": timestamp,
-                    "sequence": sequence_number,
-                }
-            ]
+            return [{"data": data, "timestamp": timestamp, "sequence": sequence}]
         elif nal_type == NAL_TYPE_FU_A:
-            return self._parse_fua(payload, timestamp, sequence_number, ssrc)
+            return self._parse_fua(data, timestamp, sequence, ssrc)
         elif nal_type == NAL_TYPE_STAP_A:
-            return self._parse_stap(payload, timestamp, sequence_number)
-        # Other aggregation / fragmentation modes: silently dropped
+            return self._parse_stap(data, timestamp, sequence)
+
         return []
 
     def _parse_fua(
