@@ -173,16 +173,25 @@ export class NdiSignaling {
           rtcpPort: remotePort + 1,
         });
 
-        const rtpCapabilities = this.router.getRouterCapabilities();
+        // Build minimal RTP capabilities for the bridge: only H.264 video
+        // (no RTX, no VP8/VP9, no audio). This ensures the Consumer sends
+        // the H.264 stream, not the RTX retransmission stream.
+        const routerCaps = this.router.getRouterCapabilities();
+        const bridgeCaps = {
+          codecs: (routerCaps.codecs || []).filter(
+            (c: any) => c.mimeType === 'video/H264'
+          ),
+          headerExtensions: (routerCaps.headerExtensions || []).filter(
+            (h: any) => h.kind === 'video'
+          ),
+        };
         const consumer = await entry.transport.consume({
           producerId,
-          rtpCapabilities,
+          rtpCapabilities: bridgeCaps,
           paused: false,
         });
 
         // Explicitly resume the Consumer to ensure media flows immediately.
-        // Consume with paused: false should suffice, but some mediasoup
-        // versions still need an explicit resume() call.
         await consumer.resume();
 
         socket.emit('consumer-ready', { producerId });

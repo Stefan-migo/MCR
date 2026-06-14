@@ -354,7 +354,7 @@ describe('NdiSignaling — consume-stream creates a Consumer (R-009)', () => {
 
     expect(transportMock.consume).toHaveBeenCalledWith({
       producerId: 'prod-1',
-      rtpCapabilities: { codecs: [] },
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
       paused: false,
     });
     expect(socketEmit).toHaveBeenCalledWith('consumer-ready', { producerId: 'prod-1' });
