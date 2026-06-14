@@ -76,6 +76,9 @@ def build_remote_sdp(
 def extract_dtls_fingerprint(sdp: str) -> str:
     """Extract the DTLS fingerprint from a local SDP.
 
+    The SDP line looks like: a=fingerprint:sha-256 AA:BB:CC:...
+    We need everything after "a=fingerprint:".
+
     Parameters
     ----------
     sdp : str
@@ -84,9 +87,10 @@ def extract_dtls_fingerprint(sdp: str) -> str:
     Returns
     -------
     str
-        The fingerprint value (e.g. "sha-256 XX:XX:...")
+        The full fingerprint value (e.g. "sha-256 AA:BB:CC:DD:EE:...")
     """
-    match = re.search(r"a=fingerprint:(\S+)", sdp)
+    match = re.search(r"a=fingerprint:(.+)", sdp)
     if match:
-        return match.group(1)
+        fp = match.group(1).strip()
+        return fp
     return ""

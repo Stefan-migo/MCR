@@ -85,7 +85,7 @@ class StreamManager:
 
         # Get RTP capabilities if we haven't yet
         if not self._rtp_capabilities:
-            caps_result = self.signaling.get_rtp_capabilities()
+            caps_result = self.signaling.emit_ack("get-rtp-capabilities")
             if "rtpCapabilities" in caps_result:
                 self._rtp_capabilities = caps_result["rtpCapabilities"]
                 print(f"[Manager] Got RTP capabilities")
@@ -95,7 +95,7 @@ class StreamManager:
                 return
 
         # Create WebRTC transport on the backend
-        transport_result = self.signaling.emit_with_ack(
+        transport_result = self.signaling.emit_ack(
             "create-recv-transport", {},
         )
         if "error" in transport_result:
@@ -128,7 +128,7 @@ class StreamManager:
                 "value": consumer.local_fingerprint or "",
             }],
         }
-        connect_result = self.signaling.emit_with_ack(
+        connect_result = self.signaling.emit_ack(
             "connect-recv-transport",
             {"transportId": transport_id, "dtlsParameters": dtls_params},
         )
@@ -139,7 +139,7 @@ class StreamManager:
         print(f"[Manager] WebRTC transport connected")
 
         # Consume the stream
-        consume_result = self.signaling.emit_with_ack(
+        consume_result = self.signaling.emit_ack(
             "consume-stream",
             {
                 "transportId": transport_id,
@@ -156,7 +156,7 @@ class StreamManager:
         print(f"[Manager] Consumer created: {consumer_id}")
 
         # Resume the consumer
-        resume_result = self.signaling.emit_with_ack(
+        resume_result = self.signaling.emit_ack(
             "resume-consumer",
             {"consumerId": consumer_id},
         )

@@ -6,6 +6,7 @@ connect-recv-transport, consume-stream, resume-consumer.
 """
 
 import socketio
+import threading
 import urllib3
 from typing import Callable, Optional
 
@@ -16,7 +17,7 @@ class SignalingClient:
     """Client for mediasoup WebRTC signaling over Socket.io.
 
     Connects to the backend's main namespace ('/') and provides
-    methods for the standard consumer flow.
+    methods for the standard consumer flow using ack callbacks.
     """
 
     def __init__(self, backend_url: str, ssl_verify: bool = True):
@@ -40,28 +41,21 @@ class SignalingClient:
         )
         self._connected = True
 
-    def get_rtp_capabilities(self) -> dict:
-        """Get the router's RTP capabilities (ack callback)."""
+    def emit_ack(self, event: str, data=None, timeout: float = 3.0) -> dict:
+        """Emit an event and wait for the ack response.
+
+        Uses threading.Event to wait properly without busy-sleeping.
+        """
         result = {}
+        done = threading.Event()
 
         def _ack(data):
             nonlocal result
             result = data
-
-        self.sio.emit("get-rtp-capabilities", callback=_ack)
-        self.sio.sleep(0.5)
-        return result
-
-    def emit_with_ack(self, event: str, data: dict = None) -> dict:
-        """Emit an event and wait for the ack callback."""
-        result = {}
-
-        def _ack(data):
-            nonlocal result
-            result = data
+            done.set()
 
         self.sio.emit(event, data, callback=_ack)
-        self.sio.sleep(1)
+        done.wait(timeout=timeout)
         return result
 
     def disconnect(self):
