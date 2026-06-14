@@ -157,7 +157,7 @@ class WebRtcConsumer:
             ice_pwd=transport_params["iceParameters"]["password"],
             ice_candidates=transport_params["iceCandidates"],
             dtls_fingerprint=transport_params["dtlsParameters"]["fingerprints"][0],
-            dtls_role="passive",
+            dtls_role="actpass",
         )
 
         # Set server's transport as the remote offer
@@ -174,6 +174,21 @@ class WebRtcConsumer:
             self.pc.localDescription.sdp,
         )
         print(f"[WebRTC] Local fingerprint: {self.local_fingerprint}")
+
+        # Log certificate fingerprint for debugging DTLS
+        try:
+            from hashlib import sha256
+            from OpenSSL.crypto import dump_certificate, FILETYPE_ASN1
+            if hasattr(self.pc, '_certificate') and self.pc._certificate:
+                cert_der = dump_certificate(FILETYPE_ASN1, self.pc._certificate.x509)
+                cert_fp = sha256(cert_der).hexdigest().upper()
+                fp_str = ':'.join(cert_fp[i:i+2] for i in range(0, len(cert_fp), 2))
+                sdp_fp = (self.local_fingerprint or '').split(' ')[-1]
+                print(f"[WebRTC] Cert fingerprint: {fp_str}")
+                print(f"[WebRTC] SDP fingerprint:   {sdp_fp}")
+                print(f"[WebRTC] Match: {fp_str == sdp_fp}")
+        except Exception as e:
+            print(f"[WebRTC] Cert logging skipped: {e}")
 
         print(f"[WebRTC] Setup complete, waiting for ICE/DTLS...")
         await asyncio.sleep(0.5)
