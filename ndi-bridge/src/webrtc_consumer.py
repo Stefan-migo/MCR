@@ -157,7 +157,7 @@ class WebRtcConsumer:
             ice_pwd=transport_params["iceParameters"]["password"],
             ice_candidates=transport_params["iceCandidates"],
             dtls_fingerprint=transport_params["dtlsParameters"]["fingerprints"][0],
-            dtls_role="actpass",
+            dtls_role="passive",
         )
 
         # Set server's transport as the remote offer

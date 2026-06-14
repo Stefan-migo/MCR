@@ -1,7 +1,7 @@
 """Stream manager — orchestrates the WebRTC → NDI pipeline.
 
-Manages per-stream lifecycle: wait for producer → create WebRTC consumer →
-connect → consume → decode → NDI output → cleanup on stop.
+All stream setup runs in a background thread to avoid blocking
+the Socket.io event thread.
 """
 
 import threading
@@ -15,20 +15,6 @@ from .webrtc_consumer import WebRtcConsumer
 
 
 class StreamState:
-    """Holds all resources for a single stream.
-
-    Attributes
-    ----------
-    producer_id : str
-        Mediasoup producer identifier.
-    source_name : str
-        NDI source display name.
-    sender : NdiSender or None
-        NDI output sender.
-    consumer : WebRtcConsumer or None
-        WebRTC consumer receiving frames.
-    """
-
     def __init__(self, producer_id: str, source_name: str):
         self.producer_id = producer_id
         self.source_name = source_name
@@ -40,194 +26,146 @@ class StreamState:
 
 
 class StreamManager:
-    """Orchestrates per-stream lifecycle: start → WebRTC → NDI → stop."""
-
-    def __init__(
-        self,
-        signaling,
-        max_streams: int = 8,
-        source_prefix: str = "MCR-",
-    ):
+    def __init__(self, signaling, max_streams: int = 8, source_prefix: str = "MCR-"):
         self.streams: Dict[str, StreamState] = {}
         self.signaling = signaling
         self.max_streams = max_streams
         self.source_prefix = source_prefix
-        self._rtp_capabilities: Optional[dict] = None
-        self._stream_to_producer: Dict[str, str] = {}  # stream_id → producer_id
+        self._stream_to_producer: Dict[str, str] = {}
+        self._rtp_caps: Optional[dict] = None
 
     def on_stream_started(self, data: dict):
-        """Handle a new video producer — start WebRTC → NDI pipeline.
-
-        The main namespace emits ``stream-started`` with:
-            { stream: { producerId, id, clientId, deviceName, ... } }
-        """
-        # Extract producerId from either format (direct or nested in stream)
+        """Handle a new video producer — spawns bg thread for setup."""
         producer_id = data.get("producerId")
         stream_id = None
         if not producer_id and "stream" in data:
             stream_id = data["stream"].get("id")
             producer_id = data["stream"].get("producerId") or stream_id
         if not producer_id:
-            print(f"[Manager] stream-started missing producerId, data keys: {list(data.keys())}")
             return
 
-        # Store stream_id → producer_id mapping for stream-ended events
         if stream_id:
             self._stream_to_producer[stream_id] = producer_id
-
         if len(self.streams) >= self.max_streams:
             print(f"[Manager] Max streams ({self.max_streams}), skipping {producer_id}")
             return
 
+        thread = threading.Thread(target=self._setup, args=(producer_id,), daemon=True)
+        thread.start()
+
+    def _setup(self, producer_id: str):
+        """Full setup pipeline in a background thread."""
         source_name = f"{self.source_prefix}{producer_id[:8]}"
         state = StreamState(producer_id, source_name)
         self.streams[producer_id] = state
 
-        # Get RTP capabilities if we haven't yet
-        if not self._rtp_capabilities:
-            caps_result = self.signaling.emit_ack("get-rtp-capabilities")
-            if "rtpCapabilities" in caps_result:
-                self._rtp_capabilities = caps_result["rtpCapabilities"]
+        # 1. Get RTP capabilities
+        caps = self._rtp_caps
+        if not caps:
+            r = self.signaling.emit_ack("get-rtp-capabilities")
+            if "rtpCapabilities" in r:
+                self._rtp_caps = caps = r["rtpCapabilities"]
                 print(f"[Manager] Got RTP capabilities")
             else:
-                print(f"[Manager] Failed to get RTP capabilities: {caps_result.get('error', 'unknown')}")
+                print(f"[Manager] No RTP capabilities")
                 self.remove_stream(producer_id)
                 return
 
-        # Create WebRTC transport on the backend
-        transport_result = self.signaling.emit_ack(
-            "create-recv-transport", {},
-        )
-        if "error" in transport_result:
-            print(f"[Manager] Failed to create transport: {transport_result['error']}")
+        # 2. Create WebRTC transport
+        transport = self.signaling.emit_ack("create-recv-transport")
+        if "error" in transport or "id" not in transport:
+            print(f"[Manager] Transport error: {transport}")
             self.remove_stream(producer_id)
             return
+        tport_id = transport["id"]
+        print(f"[Manager] Created WebRTC transport: {tport_id}")
 
-        transport_id = transport_result["id"]
-        print(f"[Manager] Created WebRTC transport: {transport_id}")
-
-        # First: create the Consumer on the backend (media will flow thru transport)
-        consume_result = self.signaling.emit_ack(
-            "consume-stream",
-            {
-                "transportId": transport_id,
-                "producerId": producer_id,
-                "rtpCapabilities": self._rtp_capabilities,
-            },
-        )
-        if "error" in consume_result:
-            print(f"[Manager] Failed to consume: {consume_result['error']}")
+        # 3. Create Consumer (before WebRTC setup — media flows when DTLS connects)
+        r = self.signaling.emit_ack("consume-stream", {
+            "transportId": tport_id,
+            "producerId": producer_id,
+            "rtpCapabilities": caps,
+        })
+        if "error" in r:
+            print(f"[Manager] Consume error: {r}")
             self.remove_stream(producer_id)
             return
-        consumer_id = consume_result.get("id")
+        consumer_id = r.get("id")
         print(f"[Manager] Consumer created: {consumer_id}")
 
-        # Resume the consumer so media flows
-        resume_result = self.signaling.emit_ack(
-            "resume-consumer",
-            {"consumerId": consumer_id},
-        )
-        if "error" in resume_result:
-            print(f"[Manager] Failed to resume consumer: {resume_result['error']}")
-        else:
-            print(f"[Manager] Consumer resumed")
+        # 4. Resume consumer
+        self.signaling.emit_ack("resume-consumer", {"consumerId": consumer_id})
+        print(f"[Manager] Consumer resumed")
 
-        # Now set up the WebRTC connection to receive the media
-        consumer = WebRtcConsumer(
-            source_name,
-            on_frame=lambda frame: self._on_frame(producer_id, frame),
-        )
-        consumer.start(transport_result)
+        # 5. Setup WebRTC consumer (aiortc)
+        consumer = WebRtcConsumer(source_name, on_frame=lambda f: self._on_frame(producer_id, f))
+        consumer.start(transport)  # transport has iceCandidates, iceParameters, dtlsParameters
         state.consumer = consumer
 
         if not consumer.local_fingerprint:
-            print(f"[Manager] No DTLS fingerprint for {producer_id}, skipping")
+            print(f"[Manager] No fingerprint")
             self.remove_stream(producer_id)
             return
 
-        # Connect the WebRTC transport with our DTLS fingerprint.
-        # local_fingerprint format: "sha-256 AA:BB:CC:DD:..."
-        # mediasoup expects: algorithm="sha-256", value="AA:BB:CC:DD:..."
-        fp_parts = (consumer.local_fingerprint or "").split(" ", 1)
-        fp_algorithm = fp_parts[0] if len(fp_parts) > 0 else "sha-256"
-        fp_value = fp_parts[1] if len(fp_parts) > 1 else fp_parts[0]
-        dtls_params = {
-            "role": "client",
-            "fingerprints": [{
-                "algorithm": fp_algorithm,
-                "value": fp_value,
-            }],
-        }
-        connect_result = self.signaling.emit_ack(
-            "connect-recv-transport",
-            {"transportId": transport_id, "dtlsParameters": dtls_params},
-        )
-        if "error" in connect_result:
-            print(f"[Manager] Failed to connect transport: {connect_result['error']}")
+        # 6. Connect transport with our DTLS fingerprint
+        fp = consumer.local_fingerprint.split(" ", 1)
+        cr = self.signaling.emit_ack("connect-recv-transport", {
+            "transportId": tport_id,
+            "dtlsParameters": {
+                "role": "client",
+                "fingerprints": [{"algorithm": fp[0], "value": fp[1] if len(fp) > 1 else fp[0]}],
+            },
+        })
+        if "error" in cr:
+            print(f"[Manager] Connect error: {cr}")
             self.remove_stream(producer_id)
             return
-        print(f"[Manager] WebRTC transport connected")
+        print(f"[Manager] Transport connected")
 
-        # Create NDI source
+        # 7. Create NDI source
         sender = NdiSender(source_name)
         try:
             sender.initialize()
             state.sender = sender
             print(f"[NDI] Created source: {source_name}")
         except Exception as e:
-            print(f"[Manager] Failed to create NDI source: {e}")
+            print(f"[Manager] NDI error: {e}")
 
     def _on_frame(self, producer_id: str, frame: dict):
-        """Callback from WebRTC consumer: send frame to NDI."""
         state = self.streams.get(producer_id)
         if not state or not state.sender:
             return
-
         try:
-            img = frame["data"]
-            width = frame["width"]
-            height = frame["height"]
-
-            # Frame pacing
             now = time.time()
-            min_interval = 1.0 / max(state._fps, 1.0)
-            if now - state._last_frame_time < min_interval * 0.5:
+            if now - state._last_frame_time < (1.0 / max(state._fps, 1.0)) * 0.5:
                 return
-
-            state.sender.send_frame(img, width, height, state._fps)
+            state.sender.send_frame(frame["data"], frame["width"], frame["height"], state._fps)
             state._last_frame_time = now
             state._frame_count += 1
-
             if state._frame_count % 150 == 0:
-                print(f"[Pipeline] {producer_id}: sent {state._frame_count} frames to NDI")
+                print(f"[Pipeline] {producer_id}: {state._frame_count} frames")
         except Exception as e:
-            print(f"[Pipeline] Error sending frame: {e}")
+            print(f"[Pipeline] Error: {e}")
 
     def on_stream_stopped(self, data: dict):
-        """Handle stream stop (stream-stopped or stream-ended)."""
         producer_id = data.get("producerId")
         if not producer_id:
-            # stream-ended event: { streamId } — look up the producer mapping
-            stream_id = data.get("streamId")
-            if stream_id:
-                producer_id = self._stream_to_producer.pop(stream_id, None)
+            sid = data.get("streamId")
+            if sid:
+                producer_id = self._stream_to_producer.pop(sid, None)
         if producer_id:
             self.remove_stream(producer_id)
 
     def remove_stream(self, producer_id: str):
-        """Remove a stream and free all resources."""
         state = self.streams.pop(producer_id, None)
         if not state:
             return
-
         if state.consumer:
             state.consumer.stop()
         if state.sender:
             state.sender.destroy()
-
-        print(f"[Manager] Removed stream: {producer_id}")
+        print(f"[Manager] Removed: {producer_id}")
 
     def cleanup_all(self):
-        """Remove and clean up every active stream."""
         for pid in list(self.streams.keys()):
             self.remove_stream(pid)

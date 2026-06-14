@@ -1,10 +1,3 @@
-"""Socket.io client for mediasoup WebRTC signaling.
-
-Connects to the backend's main namespace and handles the standard
-mediasoup consumer flow: get-rtp-capabilities, create-recv-transport,
-connect-recv-transport, consume-stream, resume-consumer.
-"""
-
 import socketio
 import threading
 import urllib3
@@ -14,11 +7,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class SignalingClient:
-    """Client for mediasoup WebRTC signaling over Socket.io.
-
-    Connects to the backend's main namespace ('/') and provides
-    methods for the standard consumer flow using ack callbacks.
-    """
+    """Client for mediasoup WebRTC signaling over Socket.io."""
 
     def __init__(self, backend_url: str, ssl_verify: bool = True):
         import requests as req_lib
@@ -30,21 +19,20 @@ class SignalingClient:
         self._connected = False
 
     def on(self, event: str, callback: Callable):
-        """Register a handler for a socket.io event on the main namespace."""
         self.sio.on(event, callback)
 
     def connect(self):
-        """Connect to the main namespace."""
         self.sio.connect(
             self.backend_url,
             transports=["websocket", "polling"],
         )
         self._connected = True
 
-    def emit_ack(self, event: str, data=None, timeout: float = 3.0) -> dict:
-        """Emit an event and wait for the ack response.
+    def emit_ack(self, event: str, data=None, timeout: float = 10.0) -> dict:
+        """Emit an event and wait for the ack callback.
 
-        Uses threading.Event to wait properly without busy-sleeping.
+        NOTE: Must be called from a BACKGROUND thread, not from the
+        Socket.io event handler thread, to avoid blocking heartbeats.
         """
         result = {}
         done = threading.Event()
@@ -59,7 +47,6 @@ class SignalingClient:
         return result
 
     def disconnect(self):
-        """Disconnect from the backend."""
         self._connected = False
         self.sio.disconnect()
 
