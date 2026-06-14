@@ -98,10 +98,12 @@ def main():
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, shutdown)
 
-    # Block until signal
-    import threading as _threading
-    _shutdown_event = _threading.Event()
-    _shutdown_event.wait()
+    # Main event loop — processes socket.io events (heartbeats, acks, callbacks)
+    # This is CRITICAL: sio.sleep() processes the outgoing message queue,
+    # so emit() calls from background threads are actually sent to the server.
+    print("[Bridge] Entering event loop...")
+    while not shutdown_requested:
+        signaling.sio.sleep(0.5)
 
 
 if __name__ == "__main__":
