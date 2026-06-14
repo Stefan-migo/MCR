@@ -48,11 +48,11 @@ class SignalingClient:
             nonlocal result
             result = data
 
-        self.sio.emit("get-rtp-capabilities", _ack)
-        self.sio.sleep(0.5)  # wait for ack
+        self.sio.emit("get-rtp-capabilities", callback=_ack)
+        self.sio.sleep(0.5)
         return result
 
-    def emit_with_ack(self, event: str, data: dict) -> dict:
+    def emit_with_ack(self, event: str, data: dict = None) -> dict:
         """Emit an event and wait for the ack callback."""
         result = {}
 
@@ -61,7 +61,7 @@ class SignalingClient:
             result = data
 
         self.sio.emit(event, data, callback=_ack)
-        self.sio.sleep(1)  # wait for ack
+        self.sio.sleep(1)
         return result
 
     def disconnect(self):

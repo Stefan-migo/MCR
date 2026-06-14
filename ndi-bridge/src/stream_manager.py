@@ -85,8 +85,14 @@ class StreamManager:
 
         # Get RTP capabilities if we haven't yet
         if not self._rtp_capabilities:
-            self._rtp_capabilities = self.signaling.get_rtp_capabilities()
-            print(f"[Manager] Got RTP capabilities")
+            caps_result = self.signaling.get_rtp_capabilities()
+            if "rtpCapabilities" in caps_result:
+                self._rtp_capabilities = caps_result["rtpCapabilities"]
+                print(f"[Manager] Got RTP capabilities")
+            else:
+                print(f"[Manager] Failed to get RTP capabilities: {caps_result.get('error', 'unknown')}")
+                self.remove_stream(producer_id)
+                return
 
         # Create WebRTC transport on the backend
         transport_result = self.signaling.emit_with_ack(
