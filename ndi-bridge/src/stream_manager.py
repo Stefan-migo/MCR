@@ -106,8 +106,33 @@ class StreamManager:
         transport_id = transport_result["id"]
         print(f"[Manager] Created WebRTC transport: {transport_id}")
 
-        # Start WebRTC consumer (aiortc) with the transport params.
-        # This blocks until the local SDP + DTLS fingerprint are ready.
+        # First: create the Consumer on the backend (media will flow thru transport)
+        consume_result = self.signaling.emit_ack(
+            "consume-stream",
+            {
+                "transportId": transport_id,
+                "producerId": producer_id,
+                "rtpCapabilities": self._rtp_capabilities,
+            },
+        )
+        if "error" in consume_result:
+            print(f"[Manager] Failed to consume: {consume_result['error']}")
+            self.remove_stream(producer_id)
+            return
+        consumer_id = consume_result.get("id")
+        print(f"[Manager] Consumer created: {consumer_id}")
+
+        # Resume the consumer so media flows
+        resume_result = self.signaling.emit_ack(
+            "resume-consumer",
+            {"consumerId": consumer_id},
+        )
+        if "error" in resume_result:
+            print(f"[Manager] Failed to resume consumer: {resume_result['error']}")
+        else:
+            print(f"[Manager] Consumer resumed")
+
+        # Now set up the WebRTC connection to receive the media
         consumer = WebRtcConsumer(
             source_name,
             on_frame=lambda frame: self._on_frame(producer_id, frame),
@@ -115,7 +140,6 @@ class StreamManager:
         consumer.start(transport_result)
         state.consumer = consumer
 
-        # Fingerprint should be available now (start() is synchronous)
         if not consumer.local_fingerprint:
             print(f"[Manager] No DTLS fingerprint for {producer_id}, skipping")
             self.remove_stream(producer_id)
@@ -138,33 +162,6 @@ class StreamManager:
             self.remove_stream(producer_id)
             return
         print(f"[Manager] WebRTC transport connected")
-
-        # Consume the stream
-        consume_result = self.signaling.emit_ack(
-            "consume-stream",
-            {
-                "transportId": transport_id,
-                "producerId": producer_id,
-                "rtpCapabilities": self._rtp_capabilities,
-            },
-        )
-        if "error" in consume_result:
-            print(f"[Manager] Failed to consume: {consume_result['error']}")
-            self.remove_stream(producer_id)
-            return
-
-        consumer_id = consume_result.get("id")
-        print(f"[Manager] Consumer created: {consumer_id}")
-
-        # Resume the consumer
-        resume_result = self.signaling.emit_ack(
-            "resume-consumer",
-            {"consumerId": consumer_id},
-        )
-        if "error" in resume_result:
-            print(f"[Manager] Failed to resume consumer: {resume_result['error']}")
-        else:
-            print(f"[Manager] Consumer resumed")
 
         # Create NDI source
         sender = NdiSender(source_name)
