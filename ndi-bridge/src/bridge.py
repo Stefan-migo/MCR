@@ -1,10 +1,9 @@
-"""NDI Bridge — main entry point.
+"""NDI Bridge — async entry point.
 
-Connects to the backend's main Socket.io namespace, listens for
-device events, and starts WebRTC → NDI pipelines for each
-video producer.
+Uses asyncio + socketio.AsyncClient for reliable WebRTC signaling.
 """
 
+import asyncio
 import json
 import signal
 import sys
@@ -13,13 +12,11 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from .config import BridgeConfig
-from .signaling import SignalingClient
-from .stream_manager import StreamManager
+from .signaling import AsyncSignalingClient
+from .stream_manager import AsyncStreamManager
 
 
-def _start_health_check(manager: StreamManager, port: int = 9999):
-    """Start a lightweight HTTP health check server in a daemon thread."""
-
+def _start_health_check(manager: AsyncStreamManager, port: int = 9999):
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/health":
@@ -48,63 +45,42 @@ def _start_health_check(manager: StreamManager, port: int = 9999):
 _start_health_check.start_time = 0.0
 
 
-def main():
+async def main():
     config = BridgeConfig()
 
     print(f"[Bridge] Backend URL: {config.backend_url}")
-    print(f"[Bridge] Source prefix: {config.source_prefix}")
     print(f"[Bridge] Max streams: {config.max_streams}")
 
-    signaling = SignalingClient(config.backend_url, ssl_verify=config.ssl_verify)
-    manager = StreamManager(
+    signaling = AsyncSignalingClient(config.backend_url, ssl_verify=config.ssl_verify)
+    manager = AsyncStreamManager(
         signaling,
         max_streams=config.max_streams,
         source_prefix=config.source_prefix,
     )
+    manager.set_loop(asyncio.get_event_loop())
 
     # Wire event handlers
     signaling.on("stream-started", manager.on_stream_started)
     signaling.on("stream-stopped", manager.on_stream_stopped)
     signaling.on("stream-ended", manager.on_stream_stopped)
-
-    # Log connection lifecycle
-    signaling.on("connect", lambda: print("[Bridge] Connected to backend"))
+    signaling.on("connect", lambda: print("[Bridge] Connected"))
     signaling.on("disconnect", lambda: print("[Bridge] Disconnected"))
 
-    # Start health check
+    # Health check
     _start_health_check.start_time = time.time()
     _start_health_check(manager)
 
-    # Connect to the backend's main namespace
+    # Connect to backend
     print(f"[Bridge] Connecting to {config.backend_url} ...")
-    signaling.connect()
+    await signaling.connect()
     print("[Bridge] Connected. Waiting for streams...")
 
-    # Handle shutdown
-    shutdown_requested = False
-
-    def shutdown(sig, frame):
-        nonlocal shutdown_requested
-        if shutdown_requested:
-            return
-        shutdown_requested = True
-        print("\n[Bridge] Shutting down...")
-        manager.cleanup_all()
-        signaling.disconnect()
-        print("[Bridge] Goodbye.")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown)
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, shutdown)
-
-    # Main event loop — processes socket.io events (heartbeats, acks, callbacks)
-    # This is CRITICAL: sio.sleep() processes the outgoing message queue,
-    # so emit() calls from background threads are actually sent to the server.
-    print("[Bridge] Entering event loop...")
-    while not shutdown_requested:
-        signaling.sio.sleep(0.5)
+    # Wait until disconnected
+    await signaling.sio.wait()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[Bridge] Shutdown complete")

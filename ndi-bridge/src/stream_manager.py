@@ -1,14 +1,8 @@
-"""Stream manager — orchestrates the WebRTC → NDI pipeline.
+"""Async stream manager — orchestrates WebRTC → NDI pipeline."""
 
-All stream setup runs in a background thread to avoid blocking
-the Socket.io event thread.
-"""
-
-import threading
+import asyncio
 import time
 from typing import Dict, Optional
-
-import numpy as np
 
 from .ndi_sender import NdiSender
 from .webrtc_consumer import WebRtcConsumer
@@ -25,7 +19,7 @@ class StreamState:
         self._frame_count: int = 0
 
 
-class StreamManager:
+class AsyncStreamManager:
     def __init__(self, signaling, max_streams: int = 8, source_prefix: str = "MCR-"):
         self.streams: Dict[str, StreamState] = {}
         self.signaling = signaling
@@ -33,69 +27,75 @@ class StreamManager:
         self.source_prefix = source_prefix
         self._stream_to_producer: Dict[str, str] = {}
         self._rtp_caps: Optional[dict] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        """Set the asyncio event loop for background tasks."""
+        self._loop = loop
 
     def on_stream_started(self, data: dict):
-        """Handle a new video producer — spawns bg thread for setup."""
+        """Handle stream-started — schedule async setup."""
         producer_id = data.get("producerId")
-        stream_id = None
         if not producer_id and "stream" in data:
-            stream_id = data["stream"].get("id")
-            producer_id = data["stream"].get("producerId") or stream_id
+            sid = data["stream"].get("id")
+            producer_id = data["stream"].get("producerId") or sid
+            if sid:
+                self._stream_to_producer[sid] = producer_id
         if not producer_id:
             return
-
-        if stream_id:
-            self._stream_to_producer[stream_id] = producer_id
         if len(self.streams) >= self.max_streams:
-            print(f"[Manager] Max streams ({self.max_streams}), skipping {producer_id}")
+            print(f"[Manager] Max streams reached, skipping {producer_id}")
             return
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._setup(producer_id), self._loop)
+        else:
+            print(f"[Manager] No event loop available")
 
-        thread = threading.Thread(target=self._setup, args=(producer_id,), daemon=True)
-        thread.start()
-
-    def _setup(self, producer_id: str):
-        """Full setup pipeline in a background thread."""
+    async def _setup(self, producer_id: str):
+        """Full async setup pipeline."""
         source_name = f"{self.source_prefix}{producer_id[:8]}"
         state = StreamState(producer_id, source_name)
         self.streams[producer_id] = state
 
+        sig = self.signaling
+
         # 1. Get RTP capabilities
         caps = self._rtp_caps
         if not caps:
-            r = self.signaling.emit_ack("get-rtp-capabilities")
+            r = await sig.emit_ack("get-rtp-capabilities")
             if "rtpCapabilities" in r:
                 self._rtp_caps = caps = r["rtpCapabilities"]
                 print(f"[Manager] Got RTP capabilities")
             else:
-                print(f"[Manager] No RTP capabilities")
+                print(f"[Manager] No RTP caps: {r}")
                 self.remove_stream(producer_id)
                 return
 
         # 2. Create WebRTC transport
-        transport = self.signaling.emit_ack("create-recv-transport")
-        if "error" in transport or "id" not in transport:
+        transport = await sig.emit_ack("create-recv-transport")
+        if "id" not in transport:
             print(f"[Manager] Transport error: {transport}")
             self.remove_stream(producer_id)
             return
         tport_id = transport["id"]
-        print(f"[Manager] Created WebRTC transport: {tport_id}")
+        print(f"[Manager] Created transport: {tport_id}")
 
         # 3. Create Consumer
-        r = self.signaling.emit_ack("consume-stream", {
+        r = await sig.emit_ack("consume-stream", {
             "transportId": tport_id, "producerId": producer_id, "rtpCapabilities": caps,
         })
-        if "error" in r:
+        if "id" not in r:
             print(f"[Manager] Consume error: {r}")
             self.remove_stream(producer_id)
             return
-        consumer_id = r.get("id")
-        print(f"[Manager] Consumer created: {consumer_id}")
+        consumer_id = r["id"]
+        print(f"[Manager] Consumer: {consumer_id}")
 
-        # 4. Resume consumer
-        self.signaling.emit_ack("resume-consumer", {"consumerId": consumer_id})
+        # 4. Resume
+        await sig.emit_ack("resume-consumer", {"consumerId": consumer_id})
         print(f"[Manager] Consumer resumed")
 
-        # 5. Setup WebRTC consumer (aiortc)
+        # 5. WebRTC consumer (aiortc)
         consumer = WebRtcConsumer(source_name, on_frame=lambda f: self._on_frame(producer_id, f))
         consumer.start(transport)
         state.consumer = consumer
@@ -107,7 +107,7 @@ class StreamManager:
 
         # 6. Connect transport
         fp = consumer.local_fingerprint.split(" ", 1)
-        cr = self.signaling.emit_ack("connect-recv-transport", {
+        cr = await sig.emit_ack("connect-recv-transport", {
             "transportId": tport_id,
             "dtlsParameters": {
                 "role": "client",
@@ -120,12 +120,12 @@ class StreamManager:
             return
         print(f"[Manager] Transport connected")
 
-        # 7. Create NDI source
+        # 7. NDI source
         sender = NdiSender(source_name)
         try:
             sender.initialize()
             state.sender = sender
-            print(f"[NDI] Created source: {source_name}")
+            print(f"[NDI] Created: {source_name}")
         except Exception as e:
             print(f"[Manager] NDI error: {e}")
 
@@ -135,7 +135,8 @@ class StreamManager:
             return
         try:
             now = time.time()
-            if now - state._last_frame_time < (1.0 / max(state._fps, 1.0)) * 0.5:
+            interval = 1.0 / max(state._fps, 1.0)
+            if now - state._last_frame_time < interval * 0.5:
                 return
             state.sender.send_frame(frame["data"], frame["width"], frame["height"], state._fps)
             state._last_frame_time = now
