@@ -68,10 +68,14 @@ class RtpReceiver:
             try:
                 data, addr = self.sock.recvfrom(65535)
                 pkt_count += 1
-                if pkt_count <= 3:
+                if pkt_count <= 5:
+                    first_bytes = data[12:18].hex() if len(data) > 17 else '?'
+                    payload_nal = (data[12] & 0x1F) if len(data) > 12 else '?'
                     print(f"[RTP] Packet #{pkt_count} from {addr}, size={len(data)}B, "
                           f"payload_type={(data[1] & 0x7F) if len(data) > 1 else '?'}, "
-                          f"seq={(data[2] << 8 | data[3]) if len(data) > 3 else '?'}")
+                          f"seq={(data[2] << 8 | data[3]) if len(data) > 3 else '?'}, "
+                          f"nal_type={payload_nal}, "
+                          f"bytes_12_18={first_bytes}")
                 if pkt_count % 500 == 0:
                     print(f"[RTP] Received {pkt_count} packets so far")
 
