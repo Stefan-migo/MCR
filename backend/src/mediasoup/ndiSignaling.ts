@@ -161,16 +161,14 @@ export class NdiSignaling {
           return;
         }
 
-        // Connect the PlainTransport to the bridge's RTP endpoint so that
-        // the Consumer (created below) sends its RTP to the bridge.
-        // rtcpPort is required when rtcpMux is disabled (port+1 by convention).
+        // Connect the PlainTransport to the bridge's RTP endpoint.
+        // With rtcpMux enabled, a single port handles both RTP and RTCP.
         const bridgeIp = rtpIp || '127.0.0.1';
         const remotePort = rtpPort ?? entry.rtpPort;
-        console.log(`[NDI] Connecting PlainTransport to ${bridgeIp}:${remotePort} (rtcp :${remotePort + 1})`);
+        console.log(`[NDI] Connecting PlainTransport to ${bridgeIp}:${remotePort}`);
         await entry.transport.connect({
           ip: bridgeIp,
           port: remotePort,
-          rtcpPort: remotePort + 1,
         });
 
         // Build RTP capabilities with H.264 only (no RTX, no VP8/VP9).
@@ -190,7 +188,6 @@ export class NdiSignaling {
           paused: false,
         });
 
-        // Explicitly resume the Consumer to ensure media flows immediately.
         await consumer.resume();
 
         socket.emit('consumer-ready', { producerId });
@@ -303,7 +300,7 @@ export class NdiSignaling {
   }> {
     const transport = await this.router.createPlainTransport({
       listenIp: { ip: this.config.plainTransport.listenIp },
-      rtcpMux: false,
+      rtcpMux: true,
       comedia: false,
     });
 
