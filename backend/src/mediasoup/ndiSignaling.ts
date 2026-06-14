@@ -173,18 +173,22 @@ export class NdiSignaling {
           rtcpPort: remotePort + 1,
         });
 
-        // Build minimal RTP capabilities for the bridge: only H.264 video
-        // (no RTX, no VP8/VP9, no audio). This ensures the Consumer sends
-        // the H.264 stream, not the RTX retransmission stream.
+        // Build RTP capabilities matching the Producer's codecs.
+        // We need to match the exact codec (H.264) so the Consumer
+        // sends the video stream, not the RTX retransmission stream.
         const routerCaps = this.router.getRouterCapabilities();
+        const producerCodecs = producer.rtpParameters.codecs || [];
+        const producerMimeTypes = new Set(producerCodecs.map((c: any) => c.mimeType));
+
         const bridgeCaps = {
           codecs: (routerCaps.codecs || []).filter(
-            (c: any) => c.mimeType === 'video/H264'
+            (c: any) => producerMimeTypes.has(c.mimeType) && c.mimeType === 'video/H264'
           ),
           headerExtensions: (routerCaps.headerExtensions || []).filter(
             (h: any) => h.kind === 'video'
           ),
         };
+        console.log(`[NDI] Consumer codecs:`, JSON.stringify(bridgeCaps.codecs.map((c: any) => c.mimeType)));
         const consumer = await entry.transport.consume({
           producerId,
           rtpCapabilities: bridgeCaps,
