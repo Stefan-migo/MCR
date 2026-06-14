@@ -95,11 +95,12 @@ class AsyncStreamManager:
         await sig.emit_ack("resume-consumer", {"consumerId": consumer_id})
         print(f"[Manager] Consumer resumed")
 
-        # 5. WebRTC consumer (aiortc)
+        # 5. WebRTC consumer (aiortc) — run in thread to avoid blocking event loop
         consumer = WebRtcConsumer(source_name, on_frame=lambda f: self._on_frame(producer_id, f))
-        consumer.start(transport)
         state.consumer = consumer
-
+        await asyncio.to_thread(consumer.start, transport)
+        # Give it a moment for the fingerprint to be ready
+        await asyncio.sleep(0.5)
         if not consumer.local_fingerprint:
             print(f"[Manager] No fingerprint")
             self.remove_stream(producer_id)

@@ -389,10 +389,12 @@ io.on('connection', (socket) => {
   };
 
   socket.on('create-recv-transport', async (data, callback) => {
+    console.log(`[Bridge] create-recv-transport called (socket ${socket.id})`);
     try {
       const transport = await mediasoupRouter.createWebRtcTransport();
       (transport as any).appData = { ...(transport as any).appData, clientId: socket.id, role: 'recv' };
       socketRecvTransports.add(transport.id);
+      console.log(`[Bridge] WebRTC transport created: ${transport.id}`);
       safeCallback(callback, {
         id: transport.id,
         iceParameters: transport.iceParameters,
@@ -400,6 +402,7 @@ io.on('connection', (socket) => {
         dtlsParameters: transport.dtlsParameters
       });
     } catch (error) {
+      console.error(`[Bridge] create-recv-transport ERROR:`, error);
       safeCallback(callback, { error: 'Failed to create recv transport' });
     }
   });
@@ -407,6 +410,7 @@ io.on('connection', (socket) => {
   socket.on('connect-recv-transport', async (data, callback) => {
     try {
       const { transportId, dtlsParameters } = data || {};
+      console.log(`[Bridge] connect-recv-transport: ${transportId}`);
       const transport = mediasoupRouter.transports.get(transportId);
       if (!transport || !('connect' in transport)) {
         safeCallback(callback, { error: 'Transport not found' });
@@ -422,6 +426,7 @@ io.on('connection', (socket) => {
   socket.on('consume-stream', async (data, callback) => {
     try {
       const { transportId, producerId, rtpCapabilities } = data || {};
+      console.log(`[Bridge] consume-stream: transport=${transportId}, producer=${producerId}`);
       if (!transportId || !producerId || !rtpCapabilities) {
         safeCallback(callback, { error: 'transportId, producerId and rtpCapabilities are required' });
         return;

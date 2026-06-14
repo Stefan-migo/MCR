@@ -12,11 +12,14 @@ class AsyncSignalingClient:
     """Async Socket.io client for the mediasoup consumer flow."""
 
     def __init__(self, backend_url: str, ssl_verify: bool = True):
-        import requests as req_lib
-        http_session = req_lib.Session()
-        if not ssl_verify:
-            http_session.verify = False
-        self.sio = socketio.AsyncClient(http_session=http_session, logger=False)
+        import aiohttp
+        import ssl as ssl_mod
+        ssl_ctx = ssl_mod.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl_mod.CERT_NONE if not ssl_verify else ssl_mod.CERT_REQUIRED
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+        self._http_session = aiohttp.ClientSession(connector=connector)
+        self.sio = socketio.AsyncClient(http_session=self._http_session, logger=False)
         self.backend_url = backend_url.rstrip("/")
         self._connected = False
 
