@@ -27,15 +27,14 @@ class H264Decoder:
         av.VideoFrame
             Decoded video frames when a picture is complete.
         """
-        packets = av.Packet(nal_data)
-        for packet in packets:
-            try:
-                frames = self.codec.decode(packet)
-                for frame in frames:
-                    self._frame_count += 1
-                    yield frame
-            except Exception as e:
-                print(f"[Decoder] Error decoding packet: {e}")
+        try:
+            packet = av.Packet(nal_data)
+            frames = self.codec.decode(packet)
+            for frame in frames:
+                self._frame_count += 1
+                yield frame
+        except Exception as e:
+            print(f"[Decoder] Error decoding packet: {e}")
 
     def flush(self):
         """Flush any remaining frames from the decoder."""
