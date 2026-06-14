@@ -96,25 +96,34 @@ class WebRtcConsumer:
                     print(f"[WebRTC] Frame error: {e}")
                     await asyncio.sleep(0.1)
 
-    def start(self, transport_params: dict):
-        """Start the WebRTC connection (must be called from a thread).
+    def setup_and_get_fingerprint(self, transport_params: dict) -> Optional[str]:
+        """Set up the WebRTC PC, extract DTLS fingerprint (blocking, creates temp loop).
 
-        Creates the PC, sets up the SDP, extracts the DTLS fingerprint
-        synchronously. Frame receive runs in the same loop.
+        After this returns, call start_loop() in a thread to handle ICE/DTLS/frames.
         """
         self._running = True
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
         try:
-            self._loop.run_until_complete(self._setup(transport_params))
+            loop.run_until_complete(self._setup(transport_params))
         except Exception as e:
             print(f"[WebRTC] Setup error: {e}")
             import traceback
             traceback.print_exc()
-            return
+            self._running = False
+            return None
 
-        # Run the event loop forever (handles ICE/DTLS + frames)
+        self._loop = loop
+        return self.local_fingerprint
+
+    def start_loop(self):
+        """Run the event loop forever (handles ICE/DTLS + frames).
+
+        Must be called in a background thread after setup_and_get_fingerprint().
+        """
+        if not self._loop:
+            return
         try:
             self._loop.run_forever()
         except Exception as e:
