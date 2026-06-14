@@ -130,6 +130,15 @@ class WebRtcConsumer:
 
         self.pc = RTCPeerConnection()
 
+        # Log connection state changes
+        @self.pc.on("iceconnectionstatechange")
+        def on_ice_state():
+            print(f"[WebRTC] ICE state: {self.pc.iceConnectionState}")
+
+        @self.pc.on("connectionstatechange")
+        def on_conn_state():
+            print(f"[WebRTC] Connection state: {self.pc.connectionState}")
+
         # Add a recvonly video transceiver
         self.pc.addTransceiver("video", direction="recvonly")
 
@@ -141,32 +150,33 @@ class WebRtcConsumer:
                 self._track = track
                 self._loop.create_task(self._receive_frames(track))
 
-        # Create an SDP offer to get our ICE/DTLS params
-        offer = await self.pc.createOffer()
-        await self.pc.setLocalDescription(offer)
-
-        # Extract our DTLS fingerprint from the local SDP
-        self.local_fingerprint = extract_dtls_fingerprint(
-            self.pc.localDescription.sdp,
-        )
-        print(f"[WebRTC] Local fingerprint: {self.local_fingerprint}")
-
-        # Build a remote SDP from mediasoup's transport params
-        # aiortc acts as the DTLS client ("active")
+        # Build a remote SDP from mediasoup's transport params.
+        # In mediasoup consuming flow, the server is the offerer.
         remote_sdp = build_remote_sdp(
             ice_ufrag=transport_params["iceParameters"]["usernameFragment"],
             ice_pwd=transport_params["iceParameters"]["password"],
             ice_candidates=transport_params["iceCandidates"],
             dtls_fingerprint=transport_params["dtlsParameters"]["fingerprints"][0],
-            dtls_role="passive",  # server is passive (actpass), client is active
+            dtls_role="passive",
         )
 
-        # Set as remote description (the server's transport acts as the answer)
+        # Set server's transport as the remote offer
         await self.pc.setRemoteDescription(
-            RTCSessionDescription(sdp=remote_sdp, type="answer"),
+            RTCSessionDescription(sdp=remote_sdp, type="offer"),
         )
 
-        print(f"[WebRTC] Connection setup complete")
+        # Create our answer (we're the DTLS active/client)
+        answer = await self.pc.createAnswer()
+        await self.pc.setLocalDescription(answer)
+
+        # Extract our DTLS fingerprint from the local SDP (our answer)
+        self.local_fingerprint = extract_dtls_fingerprint(
+            self.pc.localDescription.sdp,
+        )
+        print(f"[WebRTC] Local fingerprint: {self.local_fingerprint}")
+
+        print(f"[WebRTC] Setup complete, waiting for ICE/DTLS...")
+        await asyncio.sleep(0.5)
 
     async def _close(self):
         if self.pc:
