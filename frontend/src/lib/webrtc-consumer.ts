@@ -39,7 +39,7 @@ export class BrowserRecvConsumer {
     }
     if (!this.socket) throw new Error('Not connected');
     const { rtpCapabilities } = await new Promise<any>((resolve, reject) => {
-      this.socket!.emit('get-rtp-capabilities', (resp: any) => {
+      this.socket!.emit('get-rtp-capabilities', {}, (resp: any) => {
         if (resp?.error) return reject(new Error(resp.error));
         resolve(resp);
       });
@@ -104,10 +104,45 @@ export class BrowserRecvConsumer {
       rtpParameters: resp.rtpParameters
     });
 
-    // Try resume (in case consumer is paused by server defaults)
-    this.socket!.emit('resume-consumer', { consumerId: this.consumer.id }, () => {});
+    // Configure simulcast layers so mediasoup sends video.
+    // Default to HIGHEST layer (2) for best quality out of the box.
+    // If browser-side setPreferredLayers fails (consumer.type is undefined
+    // on some mediasoup-client versions), fall back to server-side quality
+    // control via set-stream-quality.
+    console.log(`[BrowserRecvConsumer] consumer type=${this.consumer.type}, paused=${this.consumer.paused}, track.muted=${(this.consumer.track as any)?.muted}`);
+    if (this.consumer.type === 'simulcast' || this.consumer.type === 'svc') {
+      try {
+        await this.consumer.setPreferredLayers({ spatialLayer: 2, temporalLayer: 0 });
+        console.log('[BrowserRecvConsumer] setPreferredLayers OK (spatial=2)');
+      } catch (e) {
+        console.warn('[BrowserRecvConsumer] setPreferredLayers failed, trying server-side:', e);
+        this.socket?.emit('set-stream-quality', { producerId, spatialLayer: 2 });
+      }
+    } else {
+      // Fallback: ask server to set quality (works even when consumer.type is undefined)
+      console.log('[BrowserRecvConsumer] simple/unknown consumer — using server-side quality');
+      this.socket?.emit('set-stream-quality', { producerId, spatialLayer: 2 });
+    }
 
-    return this.consumer.track as MediaStreamTrack;
+    // Try resume (in case consumer is paused by server defaults)
+    this.socket!.emit('resume-consumer', { consumerId: this.consumer.id }, (r: any) => {
+      console.log('[BrowserRecvConsumer] resume-consumer response:', r);
+    });
+
+    // Debug: log track state after 3s to see if frames arrive
+    const track = this.consumer.track as MediaStreamTrack;
+    setTimeout(async () => {
+      console.log(`[BrowserRecvConsumer] track state after 3s: readyState=${track.readyState}, muted=${track.muted}, kind=${track.kind}, id=${track.id}`);
+      try {
+        const cs = await this.consumer!.getStats?.();
+        if (cs) {
+          const rtp = cs.find((s: any) => s.type === 'inbound-rtp' || s.type === 'outbound-rtp');
+          if (rtp) console.log(`[BrowserRecvConsumer] consumer stats: type=${rtp.type}, bytes=${rtp.bytesReceived || rtp.bytesSent}, packets=${rtp.packetsReceived || rtp.packetsSent}, bitrate=${rtp.bitrate}`);
+        }
+      } catch {}
+    }, 3000);
+
+    return track;
   }
 
   async attachTo(videoEl: HTMLVideoElement, producerId: string): Promise<void> {
@@ -129,6 +164,18 @@ export class BrowserRecvConsumer {
       };
     } else {
       await attach();
+    }
+  }
+
+  async setSpatialLayer(layer: number): Promise<void> {
+    if (!this.consumer) return;
+    if (this.consumer.type !== 'simulcast' && this.consumer.type !== 'svc') return;
+
+    try {
+      await this.consumer.setPreferredLayers({ spatialLayer: layer, temporalLayer: 0 });
+      console.log(`[BrowserRecvConsumer] Spatial layer set to ${layer}`);
+    } catch (error) {
+      console.warn(`[BrowserRecvConsumer] Failed to set spatial layer ${layer}:`, error);
     }
   }
 

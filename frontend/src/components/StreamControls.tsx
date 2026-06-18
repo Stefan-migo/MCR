@@ -1,6 +1,6 @@
 'use client';
 
-import { CameraQualityPreset } from '../lib/camera-service';
+import { CameraQualityPreset, LensInfo, getLensDisplayName, getFilteredLenses } from '../lib/camera-service';
 
 interface StreamControlsProps {
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -20,6 +20,15 @@ interface StreamControlsProps {
   onChangeQuality: (preset: CameraQualityPreset) => void;
   onToggleFullscreen: () => void;
   className?: string;
+  // Camera controls
+  lenses?: LensInfo[];
+  selectedLensDeviceId?: string | null;
+  onSelectLens?: (deviceId: string) => void;
+  zoom?: number | null;
+  zoomMin?: number | null;
+  zoomMax?: number | null;
+  zoomSupported?: boolean;
+  onZoomChange?: (level: number) => void;
 }
 
 export default function StreamControls({
@@ -39,10 +48,21 @@ export default function StreamControls({
   onToggleVideo,
   onChangeQuality,
   onToggleFullscreen,
-  className = ''
+  className = '',
+  lenses = [],
+  selectedLensDeviceId = null,
+  onSelectLens,
+  zoom = null,
+  zoomMin = null,
+  zoomMax = null,
+  zoomSupported = false,
+  onZoomChange,
 }: StreamControlsProps) {
   const isConnected = connectionState === 'connected';
   const isConnecting = connectionState === 'connecting';
+  const filteredLenses = getFilteredLenses(lenses);
+  const showLensPicker = filteredLenses.length > 1 && onSelectLens;
+  const showZoom = zoomSupported && zoomMin !== null && zoomMax !== null && onZoomChange;
 
   return (
     <div className={`bg-black bg-opacity-80 backdrop-blur-sm p-4 ${className}`}>
@@ -98,7 +118,7 @@ export default function StreamControls({
             }`}
             title={enableAudio ? 'Mute Audio' : 'Unmute Audio'}
           >
-            {enableAudio ? '🎤' : '🎤'}
+            🎤
           </button>
 
           {/* Video Toggle */}
@@ -111,19 +131,8 @@ export default function StreamControls({
             }`}
             title={enableVideo ? 'Disable Video' : 'Enable Video'}
           >
-            {enableVideo ? '📹' : '📹'}
+            📹
           </button>
-
-          {/* Camera Switch */}
-          {hasMultipleCameras && (
-            <button
-              onClick={onSwitchCamera}
-              className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-full transition-all duration-200 active:scale-95"
-              title="Switch Camera"
-            >
-              🔄
-            </button>
-          )}
 
           {/* Fullscreen Toggle */}
           <button
@@ -133,6 +142,46 @@ export default function StreamControls({
           >
             ⛶
           </button>
+        </div>
+      )}
+
+      {/* Lens Picker — horizontal scroll */}
+      {isConnected && showLensPicker && (
+        <div className="mb-3 overflow-x-auto whitespace-nowrap scrollbar-hide px-1">
+          <div className="flex gap-2">
+            {filteredLenses.map(lens => (
+              <button
+                key={lens.deviceId}
+                onClick={() => onSelectLens!(lens.deviceId)}
+                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-medium transition-all touch-manipulation ${
+                  selectedLensDeviceId === lens.deviceId
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'bg-gray-700 text-gray-200'
+                }`}
+              >
+                {getLensDisplayName(lens)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Zoom Slider */}
+      {isConnected && showZoom && (
+        <div className="mb-3 px-2">
+          <div className="flex items-center justify-between text-white text-xs mb-1">
+            <span>Zoom</span>
+            <span>{zoom?.toFixed(1)}x</span>
+          </div>
+          <input
+            type="range"
+            min={zoomMin ?? 1}
+            max={zoomMax ?? 10}
+            step={(zoomMax! - zoomMin!) / 20 || 0.1}
+            value={String(zoom ?? zoomMin ?? 1)}
+            onChange={e => onZoomChange!(parseFloat(e.target.value))}
+            className="w-full h-1.5 bg-gray-600 rounded-full appearance-none cursor-pointer accent-blue-500"
+          />
         </div>
       )}
 

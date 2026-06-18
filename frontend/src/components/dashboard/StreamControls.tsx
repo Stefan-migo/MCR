@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { StreamControlsProps } from '../../types/dashboard';
+import { StreamControlsProps, SpatialLayer } from '../../types/dashboard';
+import { useDashboardStore } from '../../store/dashboard-store';
 
 export default function StreamControls({ stream, onDisconnect, onRename, className = '' }: StreamControlsProps) {
   const [isRenaming, setIsRenaming] = useState(false);
@@ -92,6 +93,36 @@ export default function StreamControls({ stream, onDisconnect, onRename, classNa
         <div className="flex justify-between">
           <span>Client ID:</span>
           <span className="text-white font-mono">{stream.clientId.slice(-8)}</span>
+        </div>
+      </div>
+
+      {/* Quality Selector */}
+      <div className="mb-4">
+        <label className="block text-xs text-gray-400 mb-2">Quality</label>
+        <div className="flex space-x-1">
+          {([0, 1, 2] as SpatialLayer[]).map((layer) => {
+            const labels = ['Low', 'Medium', 'High'];
+            const currentQuality = (stream as any).quality as { spatialLayer: number } | undefined;
+            const isActive = currentQuality?.spatialLayer === layer;
+            const isDefault = !currentQuality && layer === 2;
+            return (
+              <button
+                key={layer}
+                onClick={() => {
+                  if (!isActive) {
+                    useDashboardStore.getState().setStreamQuality(stream.producerId, layer);
+                  }
+                }}
+                className={`flex-1 px-2 py-1.5 text-xs rounded font-medium transition-colors ${
+                  isActive || isDefault
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+              >
+                {labels[layer]}
+              </button>
+            );
+          })}
         </div>
       </div>
 

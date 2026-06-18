@@ -1,3 +1,63 @@
+export type LensType = 'ultra-wide' | 'wide' | 'telephoto' | 'front' | 'unknown';
+
+export interface LensInfo {
+  deviceId: string;
+  label: string;
+  groupId: string;
+  facingMode: 'user' | 'environment' | undefined;
+  zoomMin: number | null;
+  zoomMax: number | null;
+  zoomStep: number | null;
+  lensType: LensType;
+}
+
+/** User-friendly display name in Spanish, grouped by lens type. */
+export function getLensDisplayName(lens: LensInfo): string {
+  if (lens.facingMode === 'user') return 'Frontal';
+  switch (lens.lensType) {
+    case 'ultra-wide': return 'Gran angular';
+    case 'wide': return 'Principal';
+    case 'telephoto': return 'Telescópica';
+    default: return lens.label || 'Cámara';
+  }
+}
+
+/** Filter lenses to show only meaningful options. Deduplicates by lensType. */
+export function getFilteredLenses(lenses: LensInfo[]): LensInfo[] {
+  if (lenses.length === 0) return [];
+  // Group by lensType, pick first of each
+  const seen = new Set<string>();
+  const result: LensInfo[] = [];
+  for (const lens of lenses) {
+    let key = lens.lensType;
+    if (key === 'unknown') continue; // skip unrecognized lenses
+    if (lens.facingMode === 'user') key = 'front'; // group all front as one
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Map to user-friendly labels
+    const display = getLensDisplayName(lens);
+    result.push({ ...lens, label: display });
+  }
+  return result.length > 0 ? result : lenses;
+}
+
+/** Info about active camera state, used in stream-started signaling payload. */
+export interface CameraInfo {
+  lenses: LensInfo[];
+  activeLens: string | null;
+  zoom: number | null;
+}
+
+/** Heuristic: map a camera label + facingMode to a lens type. */
+export function determineLensType(label: string, facingMode: string | undefined): LensType {
+  const lower = label.toLowerCase();
+  if (/front|user/.test(lower)) return 'front';
+  if (/ultra|0\.5x|0\.6x/.test(lower)) return 'ultra-wide';
+  if (/tele|2x|3x|\bzoom\b/.test(lower)) return 'telephoto';
+  if (facingMode === 'user') return 'front';
+  return 'wide';
+}
+
 export interface CameraConstraints {
   width: number;
   height: number;
@@ -24,6 +84,8 @@ export class CameraService {
   private currentConstraints: CameraConstraints | null = null;
   private availableDevices: CameraCapabilities[] = [];
   private persistentDeviceId: string | null = null;
+  private _permissionGranted = false;
+  private _lenses: LensInfo[] = [];
 
   // Event callbacks
   public onStreamChange?: (stream: MediaStream | null) => void;
@@ -89,6 +151,216 @@ export class CameraService {
     }
   }
 
+  /** Enumerate all available camera lenses, triggering permission if needed (iOS two-phase init). */
+  async enumerateLenses(): Promise<LensInfo[]> {
+    if (!this._permissionGranted) {
+      try {
+        const permStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        permStream.getTracks().forEach(t => t.stop());
+      } catch (err) {
+        this.onError?.(err as Error);
+        this.onPermissionChange?.(false);
+        throw err;
+      }
+      this._permissionGranted = true;
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+    // Fallback: if all labels are empty (iOS privacy), use availableDevices from init
+    const hasLabels = videoInputs.some(d => d.label && d.label.length > 0);
+    const source: { deviceId: string; label: string; groupId?: string }[] = hasLabels
+      ? videoInputs
+      : this.availableDevices.length > 0 ? this.availableDevices : videoInputs;
+
+    this._lenses = source.map(d => {
+      const label = d.label || `Camera ${d.deviceId.slice(0, 8)}`;
+      const facingMode = this.guessFacingMode(label) as 'user' | 'environment' | undefined;
+      return {
+        deviceId: d.deviceId,
+        label,
+        groupId: 'groupId' in d ? (d as any).groupId : d.deviceId,
+        facingMode,
+        zoomMin: null,
+        zoomMax: null,
+        zoomStep: null,
+        lensType: determineLensType(label, facingMode),
+      };
+    });
+
+    // Populate zoom from active stream if available
+    const videoTrack = this.currentStream?.getVideoTracks()?.[0];
+    if (videoTrack) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const caps: any = videoTrack.getCapabilities?.();
+        const zoomCaps = caps?.zoom as { min: number; max: number; step: number } | undefined;
+        if (zoomCaps) {
+          const settings = videoTrack.getSettings();
+          const activeLens = this._lenses.find(l => settings?.deviceId === l.deviceId);
+          if (activeLens) {
+            activeLens.zoomMin = zoomCaps.min;
+            activeLens.zoomMax = zoomCaps.max;
+            activeLens.zoomStep = zoomCaps.step;
+          }
+        }
+      } catch {
+        // getCapabilities not supported — leave zoom as null
+      }
+    }
+
+    return this._lenses;
+  }
+
+  /** Return last-enumerated lenses. */
+  get lenses(): LensInfo[] {
+    return this._lenses;
+  }
+
+  private _pendingSwitch: Promise<MediaStream> | null = null;
+
+  /**
+   * Switch to a specific lens by deviceId.
+   * Same groupId + zoom support → applyConstraints (no restart).
+   * Different groupId or no zoom → full stream restart.
+   */
+  async switchToLens(deviceId: string): Promise<MediaStream> {
+    const target = this._lenses.find(l => l.deviceId === deviceId);
+    if (!target) throw new Error('Lens not found');
+
+    const currentTrack = this.currentStream?.getVideoTracks()?.[0];
+    const currentSettings = currentTrack?.getSettings();
+    const currentLens = currentSettings?.deviceId
+      ? this._lenses.find(l => l.deviceId === currentSettings.deviceId)
+      : null;
+
+    // Same group + zoom available → apply zoom constraint, no restart
+    if (currentLens && currentTrack && target.groupId === currentLens.groupId) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const caps: any = currentTrack.getCapabilities?.();
+      const zoomCaps = caps?.zoom as { min: number; max: number; step: number } | undefined;
+      if (zoomCaps) {
+        const zoomMap: Record<string, number | undefined> = {
+          'ultra-wide': 0.5,
+          'wide': 1.0,
+          'telephoto': 2.0,
+        };
+        const zoomValue = zoomMap[target.lensType];
+        if (zoomValue !== undefined && zoomValue >= zoomCaps.min && zoomValue <= zoomCaps.max) {
+          await (currentTrack.applyConstraints as any)({ advanced: [{ zoom: zoomValue }] });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const newCaps: any = currentTrack.getCapabilities?.();
+          const newZoom = newCaps?.zoom as { min: number; max: number; step: number } | undefined;
+          if (newZoom) {
+            const activeLens = this._lenses.find(l => l.deviceId === currentSettings!.deviceId);
+            if (activeLens) {
+              activeLens.zoomMin = newZoom.min;
+              activeLens.zoomMax = newZoom.max;
+              activeLens.zoomStep = newZoom.step;
+            }
+          }
+          return this.currentStream!;
+        }
+      }
+    }
+
+    // Abort pending switch if rapid switching
+    const pending = this._pendingSwitch;
+    let cancelled = false;
+    const abort = () => { cancelled = true; };
+
+    this._pendingSwitch = (async (): Promise<MediaStream> => {
+      if (pending) {
+        // Abort previous pending: discard its stream
+        try {
+          const prevStream = await pending;
+          prevStream?.getTracks().forEach(t => t.stop());
+        } catch { /* previous failed, ignore */ }
+      }
+      if (cancelled) throw new Error('Switch cancelled');
+
+      // Save old stream — stop only AFTER new getUserMedia succeeds
+      const oldStream = this.currentStream;
+      this.currentStream = null;
+      if (cancelled) {
+        // Restore old stream if cancellation happened before getUserMedia
+        if (oldStream) {
+          this.currentStream = oldStream;
+          this.onStreamChange?.(this.currentStream);
+        }
+        throw new Error('Switch cancelled');
+      }
+
+      // Merge deviceId with current quality constraints
+      const videoConstraints: MediaTrackConstraints = {
+        deviceId: { exact: deviceId },
+      };
+      if (this.currentConstraints) {
+        videoConstraints.width = { ideal: this.currentConstraints.width };
+        videoConstraints.height = { ideal: this.currentConstraints.height };
+        videoConstraints.frameRate = { ideal: this.currentConstraints.frameRate };
+      }
+      if (target.facingMode) {
+        videoConstraints.facingMode = { ideal: target.facingMode };
+      }
+
+      let newStream: MediaStream;
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: false,
+        });
+      } catch (err) {
+        // getUserMedia failed — restore old stream
+        if (oldStream) {
+          this.currentStream = oldStream;
+          this.onStreamChange?.(this.currentStream);
+        }
+        throw err;
+      }
+
+      // Old stream successfully replaced — stop it now
+      oldStream?.getTracks().forEach(t => t.stop());
+
+      if (cancelled) {
+        newStream.getTracks().forEach(t => t.stop());
+        // Restore old stream
+        if (oldStream) {
+          this.currentStream = oldStream;
+          this.onStreamChange?.(this.currentStream);
+        }
+        throw new Error('Switch cancelled');
+      }
+
+      this.currentStream = newStream;
+      this.onStreamChange?.(this.currentStream);
+      return this.currentStream;
+    })();
+
+    return this._pendingSwitch;
+  }
+
+  /**
+   * Set zoom level on the active video track.
+   * No-op if zoom is unsupported or no active stream.
+   */
+  async setZoom(level: number): Promise<void> {
+    const track = this.currentStream?.getVideoTracks()?.[0];
+    if (!track) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const caps: any = track.getCapabilities?.();
+    const zoomCaps = caps?.zoom as { min: number; max: number; step: number } | undefined;
+    if (!zoomCaps) return;
+
+    try {
+      await (track.applyConstraints as any)({ advanced: [{ zoom: level }] });
+    } catch {
+      // zoom out of range or not supported — gracefully ignored
+    }
+  }
+
   async startCamera(constraints?: Partial<CameraConstraints>): Promise<MediaStream> {
     try {
       (window as any).debugLogger?.addLog('info', '📷 Starting camera...');
@@ -110,10 +382,16 @@ export class CameraService {
       this.currentConstraints = { ...defaultConstraints, ...constraints };
 
       // Create media constraints - iOS Safari specific handling
+      // NOTE: Try exact resolution first (1080p for High preset), fall back to ideal.
+      // iOS WebKit often caps at 1280x720 for WebRTC even when camera supports 1080p.
+      // Using { exact } forces the browser to either deliver that resolution or reject.
+      const targetWidth = this.currentConstraints.width;
+      const targetHeight = this.currentConstraints.height;
+      const useExact = CameraService.isIOSDevice() && targetWidth >= 1920;
       const mediaConstraints: MediaStreamConstraints = {
         video: {
-          width: { ideal: this.currentConstraints.width },
-          height: { ideal: this.currentConstraints.height },
+          width: useExact ? { exact: targetWidth } : { ideal: targetWidth },
+          height: useExact ? { exact: targetHeight } : { ideal: targetHeight },
           frameRate: { ideal: this.currentConstraints.frameRate },
           facingMode: { ideal: this.currentConstraints.facingMode }
         },
@@ -160,14 +438,30 @@ export class CameraService {
             // Continue with video-only stream
           }
         } catch (videoError) {
-          // If video-only fails, try with both video and audio
-          this.currentStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+          // If exact resolution failed, fall back to ideal
+          if (useExact) {
+            console.warn('Exact 1080p not supported on this iOS device, falling back to ideal');
+            const fallbackConstraints: MediaStreamConstraints = {
+              video: {
+                width: { ideal: targetWidth },
+                height: { ideal: targetHeight },
+                frameRate: { ideal: this.currentConstraints.frameRate },
+                facingMode: { ideal: this.currentConstraints.facingMode }
+              },
+              audio: mediaConstraints.audio
+            };
+            this.currentStream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+          } else {
+            // If video-only fails, try with both video and audio
+            this.currentStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+          }
         }
       } else {
         // Standard approach for non-iOS browsers
         this.currentStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
       }
       
+      this._permissionGranted = true;  // getUserMedia succeeded, skip permission phase in enumerateLenses
       this.onStreamChange?.(this.currentStream);
       this.onPermissionChange?.(true);
 
@@ -322,6 +616,17 @@ export class CameraService {
 
   get isActive(): boolean {
     return this.currentStream !== null && this.currentStream.active;
+  }
+
+  /** Build CameraInfo payload for signaling (stream-started event). */
+  getCameraInfo(): CameraInfo {
+    const track = this.currentStream?.getVideoTracks()?.[0];
+    const activeLens = track?.getSettings()?.deviceId ?? null;
+    return {
+      lenses: this._lenses,
+      activeLens,
+      zoom: null, // ponytail: querying actual zoom requires state tracking — add if needed
+    };
   }
 
   get hasMultipleCameras(): boolean {

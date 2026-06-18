@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { WebRTCClient, WebRTCClientConfig, StreamStats } from '../lib/webrtc-client';
 import { getBackendWsUrl } from '../lib/url';
-import { CameraService, CameraConstraints, CameraQualityPreset } from '../lib/camera-service';
+import { CameraService, CameraConstraints, CameraQualityPreset, LensInfo } from '../lib/camera-service';
 
 export interface StreamState {
   // Connection state
@@ -20,6 +20,14 @@ export interface StreamState {
   cameraConstraints: CameraConstraints | null;
   selectedQualityPreset: CameraQualityPreset;
   
+  // Lens state
+  lenses: LensInfo[];
+  selectedLensDeviceId: string | null;
+  zoom: number | null;
+  zoomMin: number | null;
+  zoomMax: number | null;
+  zoomSupported: boolean;
+
   // UI state
   showControls: boolean;
   isFullscreen: boolean;
@@ -44,6 +52,11 @@ export interface StreamState {
   toggleFullscreen: () => void;
   setError: (error: string | null) => void;
   setServerUrl: (url: string) => void;
+  // Lens actions
+  setLenses: (lenses: LensInfo[]) => void;
+  selectLens: (deviceId: string) => Promise<void>;
+  setZoom: (level: number) => Promise<void>;
+  enumerateCameras: () => Promise<void>;
 }
 
 export const useStreamStore = create<StreamState>((set, get) => ({
@@ -55,7 +68,13 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   currentStream: null,
   streamStats: null,
   cameraConstraints: null,
-  selectedQualityPreset: CameraService.QUALITY_PRESETS[1], // Medium quality by default
+  selectedQualityPreset: CameraService.QUALITY_PRESETS[2], // High quality by default (1080p@30fps)
+  lenses: [],
+  selectedLensDeviceId: null,
+  zoom: null,
+  zoomMin: null,
+  zoomMax: null,
+  zoomSupported: false,
   showControls: true,
   isFullscreen: false,
   error: null,
@@ -114,6 +133,35 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       
       webrtcClient.onError = (error) => {
         set({ error: error.message });
+      };
+
+      // Phone-side handler for remote camera lens commands from dashboard
+      webrtcClient.onSetCameraLens = async (cmd) => {
+        const { cameraService } = get();
+        if (!cameraService) return;
+        try {
+          if (cmd.lensDeviceId) {
+            await cameraService.switchToLens(cmd.lensDeviceId);
+          }
+          if (cmd.zoom !== undefined) {
+            await cameraService.setZoom(cmd.zoom);
+          }
+          const info = cameraService.getCameraInfo();
+          webrtcClient.emitCameraLensChanged({
+            deviceId: cameraService.getDeviceId(),
+            activeLens: info.activeLens || '',
+            zoom: info.zoom ?? 1,
+            success: true,
+          });
+        } catch {
+          const info = cameraService.getCameraInfo();
+          webrtcClient.emitCameraLensChanged({
+            deviceId: cameraService.getDeviceId(),
+            activeLens: info.activeLens || '',
+            zoom: info.zoom ?? 1,
+            success: false,
+          });
+        }
       };
 
       // Set up fullscreen change listener
@@ -212,6 +260,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       };
 
       const stream = await cameraService.startCamera(constraints);
+      
+      // Enumerate lenses now that camera permission is granted (user gesture works on iOS)
+      get().enumerateCameras().catch(e => console.warn('[Camera] enumerate failed:', e));
       
       // Modify stream based on settings
       if (!enableVideo) {
@@ -390,7 +441,69 @@ export const useStreamStore = create<StreamState>((set, get) => ({
 
   setServerUrl: (serverUrl: string) => {
     set({ serverUrl });
-  }
+  },
+
+  // ── Lens actions ──────────────────────────────────────────────────
+
+  setLenses: (lenses: LensInfo[]) => {
+    const state = get();
+    const next: Partial<StreamState> = { lenses };
+    // Auto-select first lens if nothing is selected yet
+    if (!state.selectedLensDeviceId && lenses.length > 0) {
+      next.selectedLensDeviceId = lenses[0].deviceId;
+    }
+    set(next);
+  },
+
+  selectLens: async (deviceId: string) => {
+    const { cameraService, lenses, webrtcClient } = get();
+    if (!cameraService) return;
+
+    try {
+      const newStream = await cameraService.switchToLens(deviceId);
+      set({ selectedLensDeviceId: deviceId });
+
+      // Replace video track on the active producer — keeps stream alive, no renegotiation
+      const newTrack = newStream?.getVideoTracks?.()?.[0];
+      if (newTrack && webrtcClient) {
+        try {
+          await webrtcClient.replaceVideoTrack(newTrack);
+        } catch {
+          // replaceTrack failed — stream may need restart, but camera is already switched
+        }
+      }
+
+      // Derive zoom state from the selected lens
+      const lens = lenses.find(l => l.deviceId === deviceId);
+      if (lens && lens.zoomMin !== null) {
+        set({ zoomMin: lens.zoomMin, zoomMax: lens.zoomMax, zoomSupported: true, zoom: lens.zoomMin });
+      } else {
+        set({ zoomMin: null, zoomMax: null, zoomSupported: false, zoom: null });
+      }
+    } catch {
+      // Lens switch failed — keep current state
+    }
+  },
+
+  setZoom: async (level: number) => {
+    const { cameraService } = get();
+    if (!cameraService) return;
+    await cameraService.setZoom(level);
+    set({ zoom: level });
+  },
+
+  enumerateCameras: async () => {
+    const { cameraService } = get();
+    if (!cameraService) { console.warn('[Camera] no cameraService'); return; }
+    console.log('[Camera] enumerating lenses...');
+    try {
+      const lenses = await cameraService.enumerateLenses();
+      console.log('[Camera] found', lenses.length, 'lenses:', lenses.map(l => l.label));
+      get().setLenses(lenses);
+    } catch (e) {
+      console.warn('[Camera] enumerate error:', e);
+    }
+  },
 }));
 
 export default useStreamStore;

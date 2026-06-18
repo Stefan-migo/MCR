@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client';
+import type { CameraInfo } from './camera-service';
 
 export interface StreamInfo {
   id: string;
@@ -16,6 +17,7 @@ export interface StreamInfo {
     jitter: number;
     frameRate: number;
   };
+  cameraInfo?: CameraInfo;
 }
 
 export interface StreamStats {
@@ -42,6 +44,9 @@ export class DashboardService {
   public onDeviceRemoved?: (deviceId: string) => void;
   public onDeviceStreamingChanged?: (data: { deviceId: string; isStreaming: boolean; streamId?: string | null }) => void;
   public onStreamNameUpdated?: (streamId: string, name: string) => void;
+  public onStreamQualityChanged?: (data: { producerId: string; spatialLayer: number }) => void;
+  public onNdiControlUpdated?: (data: { deviceId: string; enabled: boolean; ndiSourceName: string | null }) => void;
+  public onCameraLensChanged?: (data: { deviceId: string; activeLens: string; zoom: number; success: boolean }) => void;
   public onStatsUpdate?: (streams: StreamInfo[]) => void;
   public onError?: (error: Error) => void;
 
@@ -186,6 +191,43 @@ export class DashboardService {
     }
   }
 
+  setStreamQuality(producerId: string, spatialLayer: number): void {
+    if (this.socket) {
+      this.socket.emit('set-stream-quality', { producerId, spatialLayer });
+    }
+  }
+
+  setNdiControl(deviceId: string, enabled: boolean, ndiName?: string): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      if (!this.socket) {
+        resolve({ success: false, error: 'Not connected' });
+        return;
+      }
+      this.socket.emit('set-ndi-control', { deviceId, enabled, ndiName }, (response: { success: boolean; error?: string }) => {
+        resolve(response);
+      });
+    });
+  }
+
+  setCameraLens(deviceId: string, params: { lensDeviceId?: string; zoom?: number }): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      if (!this.socket) {
+        resolve({ success: false, error: 'Not connected' });
+        return;
+      }
+      this.socket.emit('set-camera-lens', { deviceId, ...params }, (response: { success: boolean; error?: string }) => {
+        resolve(response);
+      });
+    });
+  }
+
+  /** Tell a device to switch from H.264 to VP8 (for buggy hardware encoders). */
+  forceVp8(deviceId: string): void {
+    if (this.socket) {
+      this.socket.emit('force-vp8', { deviceId });
+    }
+  }
+
   private setupSocketHandlers(): void {
     if (!this.socket) return;
 
@@ -262,6 +304,21 @@ export class DashboardService {
     this.socket.on('stream-name-updated', (data: { streamId: string; name: string }) => {
       console.log('Stream name updated:', data.streamId, data.name);
       this.onStreamNameUpdated?.(data.streamId, data.name);
+    });
+
+    this.socket.on('stream-quality-changed', (data: { producerId: string; spatialLayer: number }) => {
+      console.log('Stream quality changed:', data.producerId, 'layer:', data.spatialLayer);
+      this.onStreamQualityChanged?.(data);
+    });
+
+    this.socket.on('ndi-control-updated', (data: { deviceId: string; enabled: boolean; ndiSourceName: string | null }) => {
+      console.log('NDI control updated:', data);
+      this.onNdiControlUpdated?.(data);
+    });
+
+    this.socket.on('camera-lens-changed', (data: { deviceId: string; activeLens: string; zoom: number; success: boolean }) => {
+      console.log('Camera lens changed:', data);
+      this.onCameraLensChanged?.(data);
     });
 
     this.socket.on('stream-stats-update', (data: { streams: StreamInfo[] }) => {

@@ -6,7 +6,6 @@ import { CameraService } from '../../lib/camera-service';
 import CameraPreview from '../../components/CameraPreview';
 import ConnectionStatus from '../../components/ConnectionStatus';
 import StreamControls from '../../components/StreamControls';
-import QualityIndicator from '../../components/QualityIndicator';
 
 export default function StreamPage() {
   const {
@@ -32,11 +31,19 @@ export default function StreamPage() {
     toggleVideo,
     toggleControls,
     toggleFullscreen,
-    setError
+    setError,
+    // Lens state
+    lenses,
+    selectedLensDeviceId,
+    zoom,
+    zoomMin,
+    zoomMax,
+    zoomSupported,
+    selectLens,
+    setZoom,
   } = useStreamStore();
 
   const [isInitialized, setIsInitialized] = useState(false);
-  const [showQualityIndicator, setShowQualityIndicator] = useState(false);
 
   // Initialize services on component mount
   useEffect(() => {
@@ -146,6 +153,22 @@ export default function StreamPage() {
     }
   };
 
+  const handleSelectLens = async (deviceId: string) => {
+    try {
+      await selectLens(deviceId);
+    } catch (error) {
+      handleError('Failed to switch lens');
+    }
+  };
+
+  const handleZoomChange = async (level: number) => {
+    try {
+      await setZoom(level);
+    } catch (error) {
+      handleError('Failed to set zoom');
+    }
+  };
+
   if (!isInitialized) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
@@ -186,6 +209,14 @@ export default function StreamPage() {
           isFullscreen={isFullscreen}
           onVideoClick={handleVideoClick}
           className="w-full h-full"
+          lenses={lenses}
+          selectedLensDeviceId={selectedLensDeviceId}
+          onSelectLens={selectLens}
+          zoom={zoom}
+          zoomMin={zoomMin}
+          zoomMax={zoomMax}
+          zoomSupported={zoomSupported}
+          onZoomChange={setZoom}
         />
 
         {/* Fullscreen Status Overlay */}
@@ -198,13 +229,6 @@ export default function StreamPage() {
             />
             
             <div className="flex items-center space-x-2">
-              {showQualityIndicator && streamStats && (
-                <QualityIndicator
-                  stats={streamStats}
-                  className="max-w-xs"
-                />
-              )}
-              
               {/* Persistent Exit Fullscreen Button */}
               <button
                 onClick={toggleFullscreen}
@@ -215,16 +239,6 @@ export default function StreamPage() {
               </button>
             </div>
           </div>
-        )}
-
-        {/* Quality Indicator Toggle (Fullscreen) */}
-        {isFullscreen && isStreaming && (
-          <button
-            onClick={() => setShowQualityIndicator(!showQualityIndicator)}
-            className="absolute top-4 right-4 bg-black bg-opacity-70 text-white p-2 rounded-lg"
-          >
-            📊
-          </button>
         )}
 
         {/* Bottom-right Exit Fullscreen Button (Mobile-friendly) */}
@@ -278,13 +292,6 @@ export default function StreamPage() {
             onToggleFullscreen={toggleFullscreen}
             className={isFullscreen ? 'absolute bottom-0 left-0 right-0' : ''}
           />
-        </div>
-      )}
-
-      {/* Quality Indicator (Non-fullscreen) */}
-      {!isFullscreen && isStreaming && streamStats && (
-        <div className="p-4">
-          <QualityIndicator stats={streamStats} />
         </div>
       )}
 

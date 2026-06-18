@@ -1,3 +1,13 @@
+import type { LensInfo, CameraInfo } from '../lib/camera-service';
+
+export type SpatialLayer = 0 | 1 | 2;
+export type QualityLabel = 'Low' | 'Medium' | 'High';
+
+export interface StreamQuality {
+  spatialLayer: SpatialLayer;
+  label: QualityLabel;
+}
+
 export interface StreamInfo {
   id: string;
   producerId: string;
@@ -8,6 +18,8 @@ export interface StreamInfo {
   bitrate: number;
   connectedAt: Date;
   stats?: StreamStats;
+  quality?: StreamQuality;
+  cameraInfo?: CameraInfo;
 }
 
 export interface StreamStats {
@@ -65,6 +77,27 @@ export interface StreamControlsProps {
   onDisconnect: (streamId: string) => void;
   onRename: (streamId: string, name: string) => void;
   className?: string;
+}
+
+export interface NdiDeviceState {
+  deviceId: string;
+  enabled: boolean;
+  ndiSourceName: string | null;
+  loading: boolean;
+}
+
+export interface ControlModalProps {
+  stream: StreamInfo;
+  isOpen: boolean;
+  onClose: () => void;
+  onDisconnect: (streamId: string) => void;
+  onRename: (streamId: string, name: string) => void;
+  onNdiToggle: (deviceId: string, enabled: boolean, ndiName?: string) => void;
+  ndiState: NdiDeviceState | null;
+  cameraState?: { lenses: LensInfo[]; activeLens: string | null; zoom: number | null };
+  onCameraLensSelect?: (deviceId: string, lensDeviceId: string) => void;
+  onCameraZoomChange?: (deviceId: string, zoom: number) => void;
+  onForceVp8?: (deviceId: string) => void;
 }
 
 export interface ViewToggleProps {

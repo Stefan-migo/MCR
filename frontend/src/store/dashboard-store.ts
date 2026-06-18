@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { DashboardService, StreamInfo } from '../lib/dashboard-service';
+import type { SpatialLayer, NdiDeviceState } from '../types/dashboard';
+import type { LensInfo } from '../lib/camera-service';
 
 interface DashboardStore {
   // State
@@ -35,6 +37,24 @@ interface DashboardStore {
   initializeService: (serverUrl: string) => Promise<void>;
   disconnectService: () => Promise<void>;
 
+  // NDI control
+  ndiStates: Record<string, NdiDeviceState>;
+  selectedDeviceId: string | null;
+  selectDevice: (deviceId: string | null) => void;
+  setNdiState: (deviceId: string, state: Partial<NdiDeviceState>) => void;
+  setNdiControl: (deviceId: string, enabled: boolean, ndiName?: string) => void;
+  updateNdiControlState: (deviceId: string, state: { enabled: boolean; active: boolean; ndiName: string | null }) => void;
+
+  // Camera lens control
+  cameraControlState: Record<string, { lenses: LensInfo[]; activeLens: string | null; zoom: number | null }>;
+  setCameraLens: (deviceId: string, params: { lensDeviceId?: string; zoom?: number }) => void;
+  forceVp8: (deviceId: string) => void;
+  updateCameraControlState: (deviceId: string, state: { activeLens: string; zoom: number; success: boolean }) => void;
+  setStreamCameraInfo: (deviceId: string, cameraInfo: { lenses: LensInfo[]; activeLens: string | null; zoom: number | null }) => void;
+
+  // Quality
+  setStreamQuality: (producerId: string, spatialLayer: SpatialLayer) => void;
+
   // API calls
   refreshStreams: () => Promise<void>;
   updateStreamName: (streamId: string, name: string) => Promise<void>;
@@ -51,6 +71,9 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   isLoading: false,
   error: null,
   dashboardService: null,
+  ndiStates: {},
+  cameraControlState: {},
+  selectedDeviceId: null,
 
   // Basic actions
   setViewMode: (mode) => set({ viewMode: mode }),
@@ -111,10 +134,14 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   markDeviceDisconnected: (deviceId) => set((state) => ({
     devices: state.devices.map(d => d.deviceId === deviceId ? { ...d, isConnected: false } : d)
   })),
-  removeDevice: (deviceId) => set((state) => ({
-    devices: state.devices.filter(d => d.deviceId !== deviceId),
-    streams: state.streams.filter(s => (s as any).deviceId !== deviceId)
-  })),
+  removeDevice: (deviceId) => set((state) => {
+    const { [deviceId]: _, ...rest } = state.cameraControlState;
+    return {
+      devices: state.devices.filter(d => d.deviceId !== deviceId),
+      streams: state.streams.filter(s => (s as any).deviceId !== deviceId),
+      cameraControlState: rest,
+    };
+  }),
   updateDeviceStreaming: (deviceId, isStreaming, streamId) => set((state) => ({
     devices: state.devices.map(d => 
       d.deviceId === deviceId 
@@ -141,6 +168,10 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
           set((state) => ({
             devices: state.devices.map(d => d.deviceId === deviceId ? { ...d, isStreaming: true, streamId: stream.id, lastSeenAt: Date.now(), isConnected: true } : d)
           }));
+          // Initialize camera control state from stream-started payload
+          if ((stream as any).cameraInfo) {
+            get().setStreamCameraInfo(deviceId, (stream as any).cameraInfo);
+          }
         }
         get().addStream(stream);
       };
@@ -178,12 +209,35 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         get().updateStream(streamId, { customName: name });
       };
 
+      service.onStreamQualityChanged = (data) => {
+        const stream = get().streams.find(s => s.producerId === data.producerId);
+        if (stream) {
+          const qualityLabels = ['Low', 'Medium', 'High'] as const;
+          get().updateStream(stream.id, {
+            ...stream,
+            quality: { spatialLayer: data.spatialLayer as 0 | 1 | 2, label: qualityLabels[data.spatialLayer] }
+          } as any);
+        }
+      };
+
       service.onStatsUpdate = (streams) => {
         streams.forEach(stream => {
           if (stream.stats) {
             get().updateStreamStats(stream.id, stream.stats);
           }
         });
+      };
+
+      service.onNdiControlUpdated = (data) => {
+        get().updateNdiControlState(data.deviceId, {
+          enabled: data.enabled,
+          active: data.enabled,
+          ndiName: data.ndiSourceName,
+        });
+      };
+
+      service.onCameraLensChanged = (data) => {
+        get().updateCameraControlState(data.deviceId, data);
       };
 
       service.onError = (error) => {
@@ -212,7 +266,10 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         dashboardService: null, 
         isConnected: false,
         streams: [],
-        selectedStream: null
+        selectedStream: null,
+        ndiStates: {},
+        cameraControlState: {},
+        selectedDeviceId: null,
       });
     }
   },
@@ -260,6 +317,114 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         error: error instanceof Error ? error.message : 'Failed to disconnect stream'
       });
     }
+  },
+
+  // NDI control
+  selectDevice: (deviceId) => set({ selectedDeviceId: deviceId }),
+  setNdiState: (deviceId, state) => set((prev) => ({
+    ndiStates: {
+      ...prev.ndiStates,
+      [deviceId]: { deviceId, ...prev.ndiStates[deviceId], ...state } as NdiDeviceState,
+    },
+  })),
+  setNdiControl: async (deviceId, enabled, ndiName) => {
+    const { dashboardService } = get();
+    if (!dashboardService) return;
+    // Optimistic update
+    get().setNdiState(deviceId, { enabled, loading: true });
+    const result = await dashboardService.setNdiControl(deviceId, enabled, ndiName);
+    if (!result.success) {
+      // Revert optimistic update on backend validation failure
+      get().setNdiState(deviceId, { enabled: !enabled, loading: false });
+      set({ error: result.error || 'Failed to set NDI control' });
+    }
+  },
+  updateNdiControlState: (deviceId, state) => set((prev) => ({
+    ndiStates: {
+      ...prev.ndiStates,
+      [deviceId]: {
+        deviceId,
+        enabled: state.active,
+        ndiSourceName: state.ndiName || prev.ndiStates[deviceId]?.ndiSourceName || null,
+        loading: false,
+      } as NdiDeviceState,
+    },
+  })),
+
+  // Camera lens control
+  setCameraLens: async (deviceId, params) => {
+    const { dashboardService, cameraControlState } = get();
+    if (!dashboardService) return;
+
+    // Optimistic update
+    const current = cameraControlState[deviceId];
+    if (current) {
+      const optimistic: Partial<{ activeLens: string | null; zoom: number | null }> = {};
+      if (params.lensDeviceId) optimistic.activeLens = params.lensDeviceId;
+      if (params.zoom !== undefined) optimistic.zoom = params.zoom;
+      set((state) => ({
+        cameraControlState: {
+          ...state.cameraControlState,
+          [deviceId]: { ...current, ...optimistic },
+        },
+      }));
+    }
+
+    const result = await dashboardService.setCameraLens(deviceId, params);
+    if (!result.success && current) {
+      // Revert optimistic update on backend failure
+      set((state) => ({
+        cameraControlState: {
+          ...state.cameraControlState,
+          [deviceId]: current,
+        },
+      }));
+    }
+  },
+  forceVp8: (deviceId) => {
+    const { dashboardService } = get();
+    if (dashboardService) {
+      dashboardService.forceVp8(deviceId);
+    }
+  },
+  updateCameraControlState: (deviceId, state) => set((prev) => ({
+    cameraControlState: {
+      ...prev.cameraControlState,
+      [deviceId]: {
+        lenses: prev.cameraControlState[deviceId]?.lenses || [],
+        activeLens: state.activeLens,
+        zoom: state.zoom,
+      },
+    },
+  })),
+  setStreamCameraInfo: (deviceId, cameraInfo) => set((prev) => ({
+    cameraControlState: {
+      ...prev.cameraControlState,
+      [deviceId]: {
+        lenses: cameraInfo.lenses,
+        activeLens: cameraInfo.activeLens,
+        zoom: cameraInfo.zoom,
+      },
+    },
+  })),
+
+  // Quality
+  setStreamQuality: (producerId, spatialLayer) => {
+    const { dashboardService, streams } = get();
+    if (!dashboardService) return;
+
+    const qualityLabels = ['Low', 'Medium', 'High'] as const;
+    const stream = streams.find(s => s.producerId === producerId);
+    if (stream) {
+      const existingQuality = (stream as any).quality as { spatialLayer: number } | undefined;
+      if (existingQuality?.spatialLayer === spatialLayer) return;
+      get().updateStream(stream.id, {
+        ...stream,
+        quality: { spatialLayer: spatialLayer as 0 | 1 | 2, label: qualityLabels[spatialLayer] }
+      } as any);
+    }
+
+    dashboardService.setStreamQuality(producerId, spatialLayer);
   },
 }));
 

@@ -5,12 +5,19 @@ receives the video track via aiortc, and yields decoded frames.
 """
 
 import asyncio
+import logging
 import threading
 from typing import Callable, Optional
 
 import numpy as np
 
 from .sdp_builder import build_remote_sdp, extract_dtls_fingerprint
+
+# Quiet aiortc logging — no per-packet debug spew.
+# Enable INFO only to see connection state changes.
+logging.basicConfig(level=logging.WARNING, format="[aiortc] %(name)s %(message)s")
+aiortc_logger = logging.getLogger("aiortc")
+aiortc_logger.setLevel(logging.WARNING)
 
 
 class WebRtcConsumer:
@@ -29,6 +36,8 @@ class WebRtcConsumer:
         self._thread: Optional[threading.Thread] = None
         self._track = None
         self.local_fingerprint: Optional[str] = None
+        self.pc = None
+        self._pending_track = None  # track that arrived before loop was ready
 
     async def _connect(self, transport_params: dict):
         """Connect to the mediasoup WebRTC transport."""
@@ -54,7 +63,7 @@ class WebRtcConsumer:
             ice_ufrag=transport_params["iceParameters"]["usernameFragment"],
             ice_pwd=transport_params["iceParameters"]["password"],
             ice_candidates=transport_params["iceCandidates"],
-            dtls_fingerprint=transport_params["dtlsParameters"]["fingerprints"][0],
+            dtls_fingerprints=transport_params["dtlsParameters"]["fingerprints"],
             dtls_role="auto",
         )
 
@@ -76,12 +85,16 @@ class WebRtcConsumer:
     async def _receive_frames(self, track):
         """Receive decoded frames from the WebRTC video track."""
         count = 0
+        first_frame = True
         while self._running:
             try:
-                frame = await track.recv()
+                if first_frame:
+                    print(f"[WebRTC] Waiting for first frame from track...")
+                    first_frame = False
+                frame = await asyncio.wait_for(track.recv(), timeout=10.0)
                 count += 1
 
-                img = frame.to_ndarray(format="bgr24")
+                img = frame.to_ndarray(format="bgra")
 
                 if count <= 3 or count % 150 == 0:
                     print(f"[WebRTC] Frame #{count}: {frame.width}x{frame.height}")
@@ -91,22 +104,36 @@ class WebRtcConsumer:
                     "width": frame.width,
                     "height": frame.height,
                 })
+            except asyncio.TimeoutError:
+                print(f"[WebRTC] ⏳ Still waiting for frames... ({count} received so far)")
             except Exception as e:
                 if self._running:
-                    print(f"[WebRTC] Frame error: {e}")
+                    # Suppress empty errors from dead connections
+                    if str(e):
+                        print(f"[WebRTC] Frame error: {e}")
                     await asyncio.sleep(0.1)
 
-    def setup_and_get_fingerprint(self, transport_params: dict) -> Optional[str]:
+    def setup_and_get_fingerprint(
+        self, transport_params: dict, consumer_rtp_params: dict | None = None
+    ) -> Optional[str]:
         """Set up the WebRTC PC, extract DTLS fingerprint (blocking, creates temp loop).
 
         After this returns, call start_loop() in a thread to handle ICE/DTLS/frames.
+
+        Parameters
+        ----------
+        transport_params : dict
+            Server transport params (iceParameters, iceCandidates, dtlsParameters).
+        consumer_rtp_params : dict | None
+            Consumer's rtpParameters (codecs, encodings) from mediasoup consume-stream ack.
+            Used to build SDP with correct payload types.
         """
         self._running = True
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         try:
-            loop.run_until_complete(self._setup(transport_params))
+            loop.run_until_complete(self._setup(transport_params, consumer_rtp_params))
         except Exception as e:
             print(f"[WebRTC] Setup error: {e}")
             import traceback
@@ -121,29 +148,95 @@ class WebRtcConsumer:
         """Run the event loop forever (handles ICE/DTLS + frames).
 
         Must be called in a background thread after setup_and_get_fingerprint().
+        Processes any track that arrived before the loop was ready.
         """
         if not self._loop:
             return
+
+        # If a track arrived early (before loop was running), start receiving now.
+        # Capture track by value BEFORE scheduling to avoid race with cleanup.
+        if self._pending_track:
+            track = self._pending_track
+            self._pending_track = None
+            print(f"[WebRTC] Starting late frame reception for early track")
+            asyncio.run_coroutine_threadsafe(
+                self._receive_frames(track), self._loop
+            )
+
         try:
             self._loop.run_forever()
         except Exception as e:
             if self._running:
                 print(f"[WebRTC] Loop error: {e}")
 
-    async def _setup(self, transport_params: dict):
-        """Set up the WebRTC connection (synchronous part)."""
+    def _patch_jitter_buffer(self):
+        """Balance latency vs stability for WiFi streaming.
+
+        aiortc 1.14.0's RTCRtpReceiver defaults to JitterBuffer(capacity=128, prefetch=4).
+        Capacity 16 + prefetch 1 caused frame bursts → pixelation in NDI output.
+        Capacity 64 + prefetch 2 smooths WiFi jitter while keeping sub-100ms latency.
+
+        Also patches the ffmpeg decoder for low-latency decoding.
+        """
+        try:
+            # Access receivers via internal __transceivers (aiortc 1.14.0)
+            transceivers = self.pc._RTCPeerConnection__transceivers
+            for transceiver in transceivers:
+                rtp_receiver = transceiver.receiver
+                jb = rtp_receiver._RTCRtpReceiver__jitter_buffer
+                old_cap = jb.capacity
+                old_prefetch = jb._prefetch
+                jb._capacity = 64
+                jb._prefetch = 2
+                # Clear stale packets for immediate effect
+                jb.remove(64)
+                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→64, prefetch={old_prefetch}→2")
+
+                # Optimize decoder for low latency — auto threads, FAST flag
+                try:
+                    import av
+                    decoder = rtp_receiver._RTCRtpReceiver__decoder
+                    if hasattr(decoder, 'codec') and isinstance(decoder.codec, av.CodecContext):
+                        decoder.codec.threads = 0  # auto — let ffmpeg pick optimal count
+                        decoder.codec.flags2 |= av.codec.context.Flags2.FAST
+                        print(f"[WebRTC] Decoder: threads=0 (auto), flags2=FAST")
+                    else:
+                        print(f"[WebRTC] Decoder patch: codec has type {type(decoder.codec).__name__}")
+                        decoder.codec.threads = 0
+                except Exception as de:
+                    print(f"[WebRTC] Decoder patch skipped: {de}")
+        except Exception as e:
+            print(f"[WebRTC] Jitter buffer patch failed: {e}")
+
+    async def _setup(self, transport_params: dict, consumer_rtp_params: dict | None = None):
+        """Set up the WebRTC connection."""
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         self.pc = RTCPeerConnection()
 
-        # Log connection state changes
+        # Log connection state changes with more detail
         @self.pc.on("iceconnectionstatechange")
         def on_ice_state():
-            print(f"[WebRTC] ICE state: {self.pc.iceConnectionState}")
+            state = self.pc.iceConnectionState
+            print(f"[WebRTC] ICE state: {state}")
+            if state == "failed":
+                print(f"[WebRTC] ⚠ ICE FAILED — local candidates may not reach server")
 
         @self.pc.on("connectionstatechange")
         def on_conn_state():
-            print(f"[WebRTC] Connection state: {self.pc.connectionState}")
+            state = self.pc.connectionState
+            print(f"[WebRTC] Connection state: {state}")
+            if state == "failed":
+                print(f"[WebRTC] ⚠ CONNECTION FAILED — DTLS handshake likely failed")
+                print(f"[WebRTC]    Remote fingerprint sent: "
+                      f"{transport_params.get('dtlsParameters', {}).get('fingerprints', [{}])[0]}")
+            elif state == "connected":
+                print(f"[WebRTC] ✅ CONNECTED — DTLS handshake succeeded!")
+
+        # Also monitor ICE gathering state
+        @self.pc.on("icegatheringstatechange")
+        def on_ice_gathering():
+            print(f"[WebRTC] ICE gathering state: {self.pc.iceGatheringState}")
 
         # Add a recvonly video transceiver
         self.pc.addTransceiver("video", direction="recvonly")
@@ -151,52 +244,73 @@ class WebRtcConsumer:
         # Handle incoming video track
         @self.pc.on("track")
         def on_track(track):
-            print(f"[WebRTC] Received {track.kind} track")
+            print(f"[WebRTC] Received {track.kind} track from mediasoup")
             if track.kind == "video":
                 self._track = track
-                self._loop.create_task(self._receive_frames(track))
+                if self._loop:
+                    self._loop.create_task(self._receive_frames(track))
+                else:
+                    # Track arrived before event loop started — store for later
+                    print(f"[WebRTC] Track arrived early, will start receiving when loop is ready")
+                    self._pending_track = track
 
         # Build a remote SDP from mediasoup's transport params.
         # In mediasoup consuming flow, the server is the offerer.
+        # mediasoup uses ICE Lite → server is always controlling.
+        # DTLS: server is passive, client (bridge) is active.
+        ice_params = transport_params["iceParameters"]
+        dtls_params = transport_params["dtlsParameters"]
+        ice_candidates = transport_params["iceCandidates"]
+
+        print(f"[WebRTC] Server ICE params: ufrag={ice_params['usernameFragment']}, "
+              f"iceLite={ice_params.get('iceLite', True)}")
+        print(f"[WebRTC] Server DTLS fingerprints: {dtls_params.get('fingerprints', [])}")
+        print(f"[WebRTC] Server ICE candidates: {len(ice_candidates)}")
+
+        # Build SDP from server transport params + consumer's real codecs
+        codecs = (consumer_rtp_params or {}).get("codecs", [])
+        encodings = (consumer_rtp_params or {}).get("encodings", [])
+        print(f"[WebRTC] Consumer codecs for SDP: {[(c.get('mimeType'), c.get('payloadType')) for c in codecs]}")
+
         remote_sdp = build_remote_sdp(
-            ice_ufrag=transport_params["iceParameters"]["usernameFragment"],
-            ice_pwd=transport_params["iceParameters"]["password"],
-            ice_candidates=transport_params["iceCandidates"],
-            dtls_fingerprint=transport_params["dtlsParameters"]["fingerprints"][0],
+            ice_ufrag=ice_params["usernameFragment"],
+            ice_pwd=ice_params["password"],
+            ice_candidates=ice_candidates,
+            dtls_fingerprints=dtls_params["fingerprints"],
             dtls_role="passive",
+            codecs=codecs if codecs else None,
+            encodings=encodings if encodings else None,
         )
+
+        print(f"[WebRTC] Remote SDP ({len(remote_sdp)} bytes):")
+        for line in remote_sdp.split("\r\n"):
+            if line.strip():
+                print(f"[WebRTC]   {line}")
 
         # Set server's transport as the remote offer
         await self.pc.setRemoteDescription(
             RTCSessionDescription(sdp=remote_sdp, type="offer"),
         )
+        print(f"[WebRTC] Remote description set (offer)")
 
         # Create our answer (we're the DTLS active/client)
         answer = await self.pc.createAnswer()
+        print(f"[WebRTC] Local answer SDP ({len(answer.sdp)} bytes):")
+        for line in answer.sdp.split("\r\n"):
+            if line.strip():
+                print(f"[WebRTC]   {line}")
+
         await self.pc.setLocalDescription(answer)
+        print(f"[WebRTC] Local description set (answer)")
 
         # Extract our DTLS fingerprint from the local SDP (our answer)
-        self.local_fingerprint = extract_dtls_fingerprint(
-            self.pc.localDescription.sdp,
-        )
-        print(f"[WebRTC] Local fingerprint: {self.local_fingerprint}")
+        self.local_fingerprint = extract_dtls_fingerprint(answer.sdp)
+        print(f"[WebRTC] Local DTLS fingerprint: {self.local_fingerprint}")
 
-        # Log certificate fingerprint for debugging DTLS
-        try:
-            from hashlib import sha256
-            from OpenSSL.crypto import dump_certificate, FILETYPE_ASN1
-            if hasattr(self.pc, '_certificate') and self.pc._certificate:
-                cert_der = dump_certificate(FILETYPE_ASN1, self.pc._certificate.x509)
-                cert_fp = sha256(cert_der).hexdigest().upper()
-                fp_str = ':'.join(cert_fp[i:i+2] for i in range(0, len(cert_fp), 2))
-                sdp_fp = (self.local_fingerprint or '').split(' ')[-1]
-                print(f"[WebRTC] Cert fingerprint: {fp_str}")
-                print(f"[WebRTC] SDP fingerprint:   {sdp_fp}")
-                print(f"[WebRTC] Match: {fp_str == sdp_fp}")
-        except Exception as e:
-            print(f"[WebRTC] Cert logging skipped: {e}")
+        # Patch jitter buffer for low latency (LAN streaming, near-zero jitter)
+        self._patch_jitter_buffer()
 
-        print(f"[WebRTC] Setup complete, waiting for ICE/DTLS...")
+        print(f"[WebRTC] Setup complete, waiting for ICE/DTLS handshake...")
         await asyncio.sleep(0.5)
 
     async def _close(self):

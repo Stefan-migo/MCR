@@ -74,6 +74,8 @@ export const mediasoupConfig = {
           useinbandfec: 1
         }
       },
+      // H.264 first — hardware encoding on most devices = lowest latency.
+      // Profile 42e01f (baseline) is universally supported for WebRTC.
       {
         kind: 'video' as const,
         mimeType: 'video/h264',
@@ -90,6 +92,26 @@ export const mediasoupConfig = {
           { type: 'ccm', parameter: 'fir' }
         ]
       },
+      // H.264 High Profile 4.1 (640c1f) — enables iOS hardware encoder negotiation
+      {
+        kind: 'video' as const,
+        mimeType: 'video/h264',
+        clockRate: 90000,
+        parameters: {
+          'packetization-mode': 1,
+          'profile-level-id': '640c1f',
+          'level-asymmetry-allowed': 1,
+          'x-google-start-bitrate': 1000
+        },
+        rtcpFeedback: [
+          { type: 'nack' },
+          { type: 'nack', parameter: 'pli' },
+          { type: 'ccm', parameter: 'fir' }
+        ]
+      },
+      // VP8 fallback — some chipsets (MediaTek Helio G90T / Redmi Note 8 Pro)
+      // have a buggy H.264 hardware encoder that creates producers but
+      // sends 0 bytes. If H.264 doesn't work, browser falls back to VP8.
       {
         kind: 'video' as const,
         mimeType: 'video/VP8',
@@ -129,7 +151,7 @@ export const mediasoupConfig = {
     enableUdp: true,
     enableTcp: true,
     preferUdp: true,
-    maxIncomingBitrate: 1500000,
+    maxIncomingBitrate: 10000000,
     initialAvailableOutgoingBitrate: 1000000
   },
 

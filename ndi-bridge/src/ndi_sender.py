@@ -3,30 +3,70 @@ import NDIlib as ndi
 from typing import Optional
 
 
+_ndi_initialized = False
+
+
+def ndi_init():
+    """Initialize NDI SDK once (call from main thread before creating senders).
+
+    Runs destroy + initialize to reset any stale state from crashed runs.
+    """
+    global _ndi_initialized
+    if _ndi_initialized:
+        return
+    # Clean up any stale NDI state from previous crashed processes
+    ndi.destroy()
+    if not ndi.initialize():
+        raise RuntimeError("Failed to initialize NDI")
+    _ndi_initialized = True
+    print("[NDI] SDK initialized")
+
+
+def ndi_shutdown():
+    """Shut down NDI SDK once (call from main thread on exit)."""
+    global _ndi_initialized
+    if not _ndi_initialized:
+        return
+    ndi.destroy()
+    _ndi_initialized = False
+    print("[NDI] SDK shut down")
+
+
 class NdiSender:
-    """NDI source that pushes BGRA-format frames.
+    """NDI source that pushes BGRA-format frames at a fixed resolution.
 
     Creates an NDI sender with the given source name, converts incoming
     frames to BGRA if necessary, and pushes them via NDIlib.
+    The output resolution is locked to the first frame received — subsequent
+    frames at different resolutions are resized to match. This prevents
+    resolution changes during streaming (common on Android with dynamic
+    encoder adjustments or simulcast layer switches).
+
+    Note: Call ndi_init() once before creating any senders.
     """
 
     def __init__(self, source_name: str):
         self.source_name = source_name
         self._send = None
+        self._fixed_w: Optional[int] = None
+        self._fixed_h: Optional[int] = None
 
     def initialize(self):
         """Create the NDI source. Must be called before send_frame()."""
-        if not ndi.initialize():
-            raise RuntimeError("Failed to initialize NDI")
-
+        import time
         send_desc = ndi.SendCreate()
         send_desc.ndi_name = self.source_name
         send_desc.clock_video = True
         send_desc.clock_audio = False
 
         self._send = ndi.send_create(send_desc)
+        # Retry once: NDI SDK on Windows can transiently fail send_create
+        # after a previous sender was destroyed on the same process.
         if not self._send:
-            ndi.destroy()
+            time.sleep(0.2)
+            self._send = ndi.send_create(send_desc)
+
+        if not self._send:
             raise RuntimeError(f"Failed to create NDI source: {self.source_name}")
 
         print(f"[NDI] Created source: {self.source_name}")
@@ -38,7 +78,12 @@ class NdiSender:
         height: int,
         fps: float = 30.0,
     ):
-        """Encode and send a video frame via NDI.
+        """Encode and send a video frame via NDI at fixed resolution.
+
+        The output resolution is locked on the first frame. If the incoming
+        frame has a different resolution, it is resized to match using
+        Lanczos interpolation before sending. This ensures the NDI source
+        never changes size during streaming.
 
         Parameters
         ----------
@@ -61,6 +106,21 @@ class NdiSender:
             bgra[:, :, 3] = 255
         else:
             bgra = frame
+
+        # Lock output resolution to the first frame received
+        if self._fixed_w is None:
+            self._fixed_w = width
+            self._fixed_h = height
+            print(f"[NDI] Resolution locked: {width}x{height}")
+        elif width != self._fixed_w or height != self._fixed_h:
+            # Resize frame to the locked resolution using Pillow (Lanczos)
+            from PIL import Image
+            img = Image.frombuffer('RGBA', (width, height), bgra, 'raw', 'BGRA', 0, 1)
+            img = img.resize((self._fixed_w, self._fixed_h), Image.LANCZOS)
+            bgra = np.array(img, dtype=np.uint8)
+            # Pillow returns RGBA — swap R and B channels back to BGRA
+            bgra[:, :, [0, 2]] = bgra[:, :, [2, 0]]
+            width, height = self._fixed_w, self._fixed_h
 
         video_frame = ndi.VideoFrameV2()
         video_frame.data = bgra

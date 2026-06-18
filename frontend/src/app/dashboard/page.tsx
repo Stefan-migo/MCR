@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { getBackendWsUrl } from '../../lib/url';
 import { useDashboardStore } from '../../store/dashboard-store';
 import ViewToggle from '../../components/dashboard/ViewToggle';
@@ -9,6 +9,7 @@ import StreamList from '../../components/dashboard/StreamList';
 import StreamStats from '../../components/dashboard/StreamStats';
 import StreamControls from '../../components/dashboard/StreamControls';
 import QRCodeModal from '../../components/dashboard/QRCodeModal';
+import StreamModal from '../../components/dashboard/StreamModal';
 
 export default function DashboardPage() {
   const {
@@ -18,6 +19,8 @@ export default function DashboardPage() {
     isConnected,
     isLoading,
     error,
+    ndiStates,
+    cameraControlState,
     setViewMode,
     setSelectedStream,
     setError,
@@ -26,10 +29,14 @@ export default function DashboardPage() {
     refreshStreams,
     updateStreamName,
     disconnectStream,
+    setNdiControl,
+    setCameraLens,
+    forceVp8,
   } = useDashboardStore();
 
   const [isInitialized, setIsInitialized] = useState(false);
   const [showQR, setShowQR] = useState(false);
+  const [modalStreamId, setModalStreamId] = useState<string | null>(null);
 
   // Initialize dashboard service on mount
   useEffect(() => {
@@ -70,6 +77,8 @@ export default function DashboardPage() {
   }, [isConnected, refreshStreams]);
 
   const handleStreamSelect = (streamId: string) => {
+    // Primary action: open modal. Sidebar selection still works independently.
+    setModalStreamId(streamId);
     setSelectedStream(streamId);
   };
 
@@ -94,6 +103,41 @@ export default function DashboardPage() {
       console.error('Failed to rename stream:', error);
     }
   };
+
+  const handleNdiToggle = useCallback(
+    (deviceId: string, enabled: boolean, ndiName?: string) => {
+      setNdiControl(deviceId, enabled, ndiName);
+    },
+    [setNdiControl]
+  );
+
+  const handleCameraLensSelect = useCallback(
+    (deviceId: string, lensDeviceId: string) => {
+      setCameraLens(deviceId, { lensDeviceId });
+    },
+    [setCameraLens]
+  );
+
+  const handleCameraZoomChange = useCallback(
+    (deviceId: string, zoom: number) => {
+      setCameraLens(deviceId, { zoom });
+    },
+    [setCameraLens]
+  );
+
+  const handleForceVp8 = useCallback(
+    (deviceId: string) => {
+      forceVp8(deviceId);
+    },
+    [forceVp8]
+  );
+
+  const modalStreamData = modalStreamId
+    ? streams.find((s) => s.id === modalStreamId)
+    : null;
+  const modalDeviceId = (modalStreamData as any)?.deviceId as string | undefined;
+  const modalNdiState = modalDeviceId ? ndiStates[modalDeviceId] || null : null;
+  const modalCameraState = modalDeviceId ? cameraControlState[modalDeviceId] || null : null;
 
   const selectedStreamData = streams.find(s => s.id === selectedStream);
 
@@ -289,6 +333,22 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {modalStreamId && (
+        <StreamModal
+          stream={modalStreamData}
+          isOpen={true}
+          onClose={() => setModalStreamId(null)}
+          onDisconnect={handleStreamDisconnect}
+          onRename={handleStreamRename}
+          onNdiToggle={handleNdiToggle}
+          ndiState={modalNdiState}
+          cameraState={modalCameraState}
+          onCameraLensSelect={handleCameraLensSelect}
+          onCameraZoomChange={handleCameraZoomChange}
+          onForceVp8={handleForceVp8}
+        />
+      )}
 
       {showQR && (
         <QRCodeModal
