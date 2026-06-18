@@ -186,6 +186,17 @@ app.get('/api/plain-transports', (req, res) => {
 });
 
 // In-memory device registry
+type LensInfo = {
+  deviceId: string;
+  label: string;
+  groupId: string;
+  facingMode?: 'user' | 'environment';
+  zoomMin: number | null;
+  zoomMax: number | null;
+  zoomStep: number | null;
+  lensType: string;
+};
+
 type DeviceInfo = {
   deviceId: string;
   socketId: string;
@@ -195,9 +206,21 @@ type DeviceInfo = {
   streamId?: string | null;
   lastSeenAt: number;
   removalTimer?: NodeJS.Timeout;
+  // Camera lens metadata (relayed from phone enumeration)
+  cameraLenses?: LensInfo[];
+  cameraActiveLens?: string | null;
+  cameraZoom?: number | null;
 };
 
 const devices: Map<string, DeviceInfo> = new Map();
+
+/** Look up a device's active socket ID by deviceId. Returns undefined if device is not connected. */
+function findDeviceSocketId(deviceId: string): string | undefined {
+  return devices.get(deviceId)?.socketId;
+}
+
+// Bridge socket tracking for NDI control routing
+let bridgeSocketId: string | null = null;
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
@@ -239,6 +262,20 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Phone emits camera lens info after enumeration completes
+  socket.on('register-camera-info', (data: { deviceId: string; lenses: LensInfo[]; activeLens?: string | null; zoom?: number | null }) => {
+    const deviceEntry = devices.get(data.deviceId);
+    if (deviceEntry) {
+      deviceEntry.cameraLenses = data.lenses;
+      deviceEntry.cameraActiveLens = data.activeLens ?? null;
+      deviceEntry.cameraZoom = data.zoom ?? null;
+      devices.set(data.deviceId, deviceEntry);
+      console.log(`📷 Camera info registered for device ${data.deviceId}: ${data.lenses.length} lenses`);
+    } else {
+      console.warn(`⚠️ register-camera-info for unknown device: ${data.deviceId}`);
+    }
+  });
+
   socket.on('create-transport', async (data, callback) => {
     try {
       const transport = await mediasoupRouter.createWebRtcTransport();
@@ -274,7 +311,8 @@ io.on('connection', (socket) => {
 
   socket.on('produce', async (data, callback) => {
     try {
-      console.log('🎬 Produce event received:', { kind: data.kind, transportId: data.transportId });
+      const codecs = data.rtpParameters?.codecs || [];
+      console.log('🎬 Produce event received:', { kind: data.kind, transportId: data.transportId, codecs: codecs.map((c: any) => ({ mimeType: c.mimeType, profile: c.parameters?.['profile-level-id'], pt: c.payloadType })) });
       const producer = await mediasoupRouter.createProducer(
         data.transportId,
         data.kind,
@@ -305,9 +343,16 @@ io.on('connection', (socket) => {
             // Emit device streaming state change
             io.emit('device-streaming-changed', { deviceId, isStreaming: true, streamId: stream.id });
           }
+          // Attach camera info if the device has registered it
+          const cameraInfo = dev?.cameraLenses ? {
+            lenses: dev.cameraLenses,
+            activeLens: dev.cameraActiveLens ?? null,
+            zoom: dev.cameraZoom ?? null,
+          } : undefined;
+
           // For now, always emit stream-started for new producers
           // The frontend will handle updating existing streams
-          io.emit('stream-started', { stream: { ...stream, deviceId } });
+          io.emit('stream-started', { stream: { ...stream, deviceId, ...(cameraInfo ? { cameraInfo } : {}) } });
           console.log(`📡 Stream started for client ${stream.clientId}`);
         }
       }
@@ -375,17 +420,19 @@ io.on('connection', (socket) => {
   const socketRecvTransports: Set<string> = new Set();
   const socketConsumers: Set<string> = new Set();
 
-  socket.on('get-rtp-capabilities', (callback) => {
+  socket.on('get-rtp-capabilities', async (data, callback) => {
     try {
       const caps = mediasoupRouter.getRouterCapabilities();
-      safeCallback(callback, { rtpCapabilities: caps });
+      safeCallback(callback, { rtpCapabilities: caps }, 'rtp-caps');
     } catch (error) {
-      safeCallback(callback, { error: 'Failed to get RTP capabilities' });
+      safeCallback(callback, { error: 'Failed to get RTP capabilities' }, 'rtp-caps-err');
     }
   });
 
-  const safeCallback = (cb: any, result: any) => {
-    if (typeof cb === 'function') cb(result);
+  const safeCallback = (cb: any, result: any, label?: string) => {
+    const isFn = typeof cb === 'function';
+    console.log(`[Bridge] safeCallback(${label || '?'}): cb is ${typeof cb}${isFn ? '' : ' — DROPPED!'}, result keys: ${Object.keys(result || {}).join(',')}`);
+    if (isFn) cb(result);
   };
 
   socket.on('create-recv-transport', async (data, callback) => {
@@ -400,10 +447,10 @@ io.on('connection', (socket) => {
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters
-      });
+      }, 'create-recv');
     } catch (error) {
       console.error(`[Bridge] create-recv-transport ERROR:`, error);
-      safeCallback(callback, { error: 'Failed to create recv transport' });
+      safeCallback(callback, { error: 'Failed to create recv transport' }, 'create-recv-err');
     }
   });
 
@@ -413,13 +460,13 @@ io.on('connection', (socket) => {
       console.log(`[Bridge] connect-recv-transport: ${transportId}`);
       const transport = mediasoupRouter.transports.get(transportId);
       if (!transport || !('connect' in transport)) {
-        safeCallback(callback, { error: 'Transport not found' });
+        safeCallback(callback, { error: 'Transport not found' }, 'connect-err');
         return;
       }
       await transport.connect({ dtlsParameters });
-      safeCallback(callback, { success: true });
+      safeCallback(callback, { success: true }, 'connect-recv');
     } catch (error) {
-      safeCallback(callback, { error: 'Failed to connect recv transport' });
+      safeCallback(callback, { error: 'Failed to connect recv transport' }, 'connect-recv-err');
     }
   });
 
@@ -428,12 +475,16 @@ io.on('connection', (socket) => {
       const { transportId, producerId, rtpCapabilities } = data || {};
       console.log(`[Bridge] consume-stream: transport=${transportId}, producer=${producerId}`);
       if (!transportId || !producerId || !rtpCapabilities) {
-        safeCallback(callback, { error: 'transportId, producerId and rtpCapabilities are required' });
+        safeCallback(callback, { error: 'transportId, producerId and rtpCapabilities are required' }, 'consume-err');
         return;
       }
 
       const consumer = await mediasoupRouter.createConsumer(transportId, producerId, rtpCapabilities);
       socketConsumers.add(consumer.id);
+
+      console.log(`[Bridge] Consumer created: id=${consumer.id}, kind=${consumer.kind}, `
+        + `type=${(consumer as any).type}, paused=${consumer.paused}, `
+        + `producerPaused=${consumer.producerPaused}`);
 
       safeCallback(callback, {
         id: consumer.id,
@@ -441,9 +492,9 @@ io.on('connection', (socket) => {
         rtpParameters: consumer.rtpParameters,
         type: (consumer as any).type,
         producerId
-      });
+      }, 'consume-stream');
     } catch (error: any) {
-      safeCallback(callback, { error: error?.message || 'Failed to consume stream' });
+      safeCallback(callback, { error: error?.message || 'Failed to consume stream' }, 'consume-err');
     }
   });
 
@@ -452,13 +503,36 @@ io.on('connection', (socket) => {
       const { consumerId } = data || {};
       const consumer = mediasoupRouter.consumers.get(consumerId);
       if (!consumer) {
-        safeCallback(callback, { error: 'Consumer not found' });
+        safeCallback(callback, { error: 'Consumer not found' }, 'resume-err');
         return;
       }
       await consumer.resume();
-      safeCallback(callback, { success: true });
+
+      // If simulcast, configure spatial/temporal layers so RTP flows.
+      // Always start at base layer (0) — not all devices produce 3 layers.
+      const ctype = (consumer as any).type;
+      if (ctype === 'simulcast' || ctype === 'svc') {
+        try {
+          await consumer.setPreferredLayers({ spatialLayer: 0, temporalLayer: 0 });
+          console.log(`[Bridge] Simulcast layers configured (spatial=0, temporal=0)`);
+        } catch (e: any) {
+          console.log(`[Bridge] setPreferredLayers error:`, e.message);
+        }
+      }
+
+      safeCallback(callback, { success: true }, 'resume');
+
+      // Check stats after 5s to verify RTP is flowing
+      setTimeout(async () => {
+        try {
+          const stats = await consumer.getStats();
+          console.log(`[Bridge] Consumer stats (${consumer.id}):`, JSON.stringify(stats));
+        } catch (e: any) {
+          console.log(`[Bridge] Consumer stats error:`, e.message);
+        }
+      }, 5000);
     } catch (error) {
-      safeCallback(callback, { error: 'Failed to resume consumer' });
+      safeCallback(callback, { error: 'Failed to resume consumer' }, 'resume-err');
     }
   });
 
@@ -495,8 +569,147 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('set-stream-quality', async (data, callback) => {
+    try {
+      const { producerId, spatialLayer } = data || {};
+
+      if (!producerId || spatialLayer === undefined) {
+        callback?.({ error: 'producerId and spatialLayer are required' });
+        return;
+      }
+
+      const consumers = mediasoupRouter.getConsumersByProducerId(producerId);
+      let updated = 0;
+
+      for (const consumer of consumers) {
+        try {
+          const consumerType = (consumer as any).type;
+          if (consumerType === 'simulcast' || consumerType === 'svc') {
+            await consumer.setPreferredLayers({ spatialLayer });
+            updated++;
+          }
+        } catch (consumerError) {
+          console.error(`[Quality] Failed to update consumer ${consumer.id}:`, consumerError);
+        }
+      }
+
+      console.log(`[Quality] Stream ${producerId}: spatial ${spatialLayer} applied to ${updated} consumers`);
+
+      // Broadcast quality change to all dashboard clients
+      if (updated > 0) {
+        io.emit('stream-quality-changed', { producerId, spatialLayer });
+      }
+
+      callback?.({ success: true, consumersUpdated: updated });
+    } catch (error) {
+      console.error(`[Quality] Error in set-stream-quality:`, error);
+      callback?.({ error: 'Failed to set stream quality' });
+    }
+  });
+
+  // NDI bridge registration (bridge identifies itself)
+  socket.on('register-bridge', () => {
+    bridgeSocketId = socket.id;
+    console.log('NDI bridge registered:', socket.id);
+  });
+
+  // NDI control — dashboard requests NDI sender create/destroy
+  socket.on('set-ndi-control', (data: { deviceId: string; enabled: boolean; ndiName?: string }, callback) => {
+    try {
+      const { deviceId, enabled, ndiName } = data;
+      if (!deviceId) {
+        callback?.({ error: 'deviceId is required' });
+        return;
+      }
+
+      // Find active stream by deviceId
+      const streams = mediasoupRouter.getActiveStreams();
+      const stream = streams.find((s: any) => s.deviceId === deviceId);
+      if (!stream) {
+        callback?.({ error: 'No active stream for device' });
+        return;
+      }
+
+      if (!bridgeSocketId) {
+        callback?.({ error: 'NDI bridge not connected' });
+        return;
+      }
+
+      const sourceName = ndiName || `MCR-${deviceId.slice(0, 8)}`;
+
+      io.to(bridgeSocketId).emit('ndi-control', {
+        deviceId,
+        producerId: stream.producerId,
+        enabled,
+        sourceName,
+      });
+
+      callback?.({ success: true });
+    } catch (error) {
+      callback?.({ error: 'Failed to process NDI control' });
+    }
+  });
+
+  // NDI control result — bridge confirms NDI state change
+  socket.on('ndi-control-result', (data: { deviceId: string; active: boolean; sourceName?: string }) => {
+    io.emit('ndi-control-updated', {
+      deviceId: data.deviceId,
+      enabled: data.active,
+      ndiSourceName: data.sourceName || null,
+    });
+  });
+
+  // Camera lens control — dashboard requests lens switch or zoom change on a device
+  socket.on('set-camera-lens', (data: { deviceId: string; lensDeviceId?: string; zoom?: number }, callback) => {
+    try {
+      const deviceInfo = devices.get(data.deviceId);
+      if (!deviceInfo || !deviceInfo.isConnected) {
+        callback?.({ error: 'Device not connected' });
+        return;
+      }
+      // Relay to the device's socket (phone client)
+      io.to(deviceInfo.socketId).emit('set-camera-lens', {
+        lensDeviceId: data.lensDeviceId,
+        zoom: data.zoom,
+      });
+      callback?.({ success: true });
+    } catch (error) {
+      callback?.({ error: 'Failed to relay camera lens command' });
+    }
+  });
+
+  // Camera lens ack — phone responds with new lens/zoom state; broadcast to dashboards
+  socket.on('camera-lens-changed', (data: { deviceId: string; activeLens: string; zoom: number; success: boolean }) => {
+    // Update stored metadata
+    const deviceEntry = devices.get(data.deviceId);
+    if (deviceEntry) {
+      deviceEntry.cameraActiveLens = data.activeLens ?? deviceEntry.cameraActiveLens;
+      deviceEntry.cameraZoom = data.zoom ?? deviceEntry.cameraZoom;
+      devices.set(data.deviceId, deviceEntry);
+    }
+    // Broadcast to all dashboard clients
+    io.emit('camera-lens-changed', data);
+  });
+
+  // Force VP8 — dashboard operator requests device to switch from H.264 to VP8
+  socket.on('force-vp8', (data: { deviceId: string }) => {
+    const device = findDeviceSocketId(data.deviceId);
+    if (!device) {
+      console.log(`[VP8] Device ${data.deviceId} not connected`);
+      return;
+    }
+    io.to(device).emit('force-vp8');
+    console.log(`[VP8] Forcing VP8 on device ${data.deviceId}`);
+  });
+
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
+
+    // Clear bridge tracking if the bridge disconnects
+    if (socket.id === bridgeSocketId) {
+      bridgeSocketId = null;
+      console.log('❌ NDI bridge disconnected');
+    }
 
     // Cleanup recv transports/consumers
     try {
@@ -579,25 +792,51 @@ async function startServer() {
   }
 }
 
-// Broadcast stream stats every 2 seconds
+// Track packet count per producer for frameRate estimation
+const prevPackets = new Map<string, { count: number; ts: number }>();
+
+// Broadcast real mediasoup producer stats every 2 seconds
 function startStatsBroadcasting() {
-  setInterval(() => {
+  setInterval(async () => {
     try {
       const streams = mediasoupRouter.getActiveStreams();
-      if (streams.length > 0) {
-        // Update mock stats for now (will be replaced with real producer stats)
-        streams.forEach(stream => {
-          if (stream.stats) {
-            stream.stats.bitrate = Math.floor(Math.random() * 2000000) + 500000; // 0.5-2.5 Mbps
-            stream.stats.packetsLost = Math.floor(Math.random() * 5); // 0-5 packets
-            stream.stats.rtt = Math.floor(Math.random() * 100) + 20; // 20-120ms
-            stream.stats.jitter = Math.floor(Math.random() * 50) + 5; // 5-55ms
-            stream.stats.frameRate = Math.floor(Math.random() * 10) + 25; // 25-35 fps
+      if (streams.length === 0) return;
+
+      const results = await Promise.allSettled(
+        streams.map(async (stream) => {
+          if (!stream.stats) return;
+          const producer = mediasoupRouter.getProducer(stream.producerId);
+          if (!producer) return;
+
+          const stats = await producer.getStats();
+          const rtpStats = stats[0];
+          if (!rtpStats) return;
+
+          stream.stats.bitrate = rtpStats.bitrate;
+          stream.stats.packetsLost = rtpStats.packetsLost;
+          stream.stats.jitter = rtpStats.jitter;
+          stream.stats.rtt = rtpStats.roundTripTime ?? stream.stats.rtt;
+
+          // Estimate frameRate from packet count delta
+          const prev = prevPackets.get(stream.producerId);
+          const now = Date.now();
+          if (prev && prev.count < rtpStats.packetCount) {
+            const elapsed = (now - prev.ts) / 1000;
+            const delta = rtpStats.packetCount - prev.count;
+            stream.stats.frameRate = elapsed > 0 ? Math.round(delta / elapsed) : stream.stats.frameRate;
           }
-        });
-        
-        io.emit('stream-stats-update', { streams });
+          prevPackets.set(stream.producerId, { count: rtpStats.packetCount, ts: now });
+        })
+      );
+
+      // Log per-stream errors but don't fail the whole batch
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          console.error('Stats fetch error:', result.reason);
+        }
       }
+
+      io.emit('stream-stats-update', { streams });
     } catch (error) {
       console.error('Error broadcasting stats:', error);
     }
