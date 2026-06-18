@@ -1,27 +1,51 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { LensInfo, getLensDisplayName, getFilteredLenses } from '../lib/camera-service';
 
 interface CameraPreviewProps {
   stream: MediaStream | null;
   isFullscreen?: boolean;
   onVideoClick?: () => void;
   className?: string;
+  // Camera overlay controls (bottom)
+  lenses?: LensInfo[];
+  selectedLensDeviceId?: string | null;
+  onSelectLens?: (deviceId: string) => void;
+  zoom?: number | null;
+  zoomMin?: number | null;
+  zoomMax?: number | null;
+  zoomSupported?: boolean;
+  onZoomChange?: (level: number) => void;
 }
 
 export default function CameraPreview({ 
   stream, 
   isFullscreen = false, 
   onVideoClick,
-  className = ''
+  className = '',
+  lenses = [],
+  selectedLensDeviceId = null,
+  onSelectLens,
+  zoom = null,
+  zoomMin = null,
+  zoomMax = null,
+  zoomSupported = false,
+  onZoomChange,
 }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const filteredLenses = getFilteredLenses(lenses);
+  const showLensPicker = filteredLenses.length > 1 && onSelectLens;
+  const showZoom = zoomSupported && zoomMin !== null && zoomMax !== null && onZoomChange;
+  // Only mirror for front camera (selfie) — back camera should be natural view
+  const activeLens = lenses.find(l => l.deviceId === selectedLensDeviceId);
+  const isFrontCamera = activeLens?.facingMode === 'user';
 
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
     }
-  }, [stream]);
+  }, [stream, activeLens?.deviceId]);
 
   const handleVideoClick = () => {
     onVideoClick?.();
@@ -52,24 +76,49 @@ export default function CameraPreview({
           isFullscreen ? 'cursor-pointer' : ''
         }`}
         style={{
-          transform: 'scaleX(-1)', // Mirror the video for selfie mode
+          transform: isFrontCamera ? 'scaleX(-1)' : undefined,
         }}
       />
-      
-      {/* Overlay for fullscreen hint */}
-      {!isFullscreen && (
-        <div className="absolute inset-0 bg-black bg-opacity-0 hover:bg-opacity-10 transition-all duration-200 flex items-center justify-center opacity-0 hover:opacity-100">
-          <div className="text-white text-center">
-            <div className="text-2xl mb-2">⛶</div>
-            <p className="text-sm">Tap for fullscreen</p>
-          </div>
+
+      {/* Bottom overlay — camera controls inside the video frame */}
+      {(showLensPicker || showZoom) && (
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent pt-8 pb-3 px-3">
+          {showLensPicker && (
+            <div className="overflow-x-auto whitespace-nowrap scrollbar-hide -mx-1 px-1 mb-2">
+              <div className="flex gap-2">
+                {filteredLenses.map(lens => (
+                  <button
+                    key={lens.deviceId}
+                    onClick={(e) => { e.stopPropagation(); onSelectLens!(lens.deviceId); }}
+                    className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-all touch-manipulation ${
+                      selectedLensDeviceId === lens.deviceId
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'bg-black/50 text-white/80 hover:bg-black/70'
+                    }`}
+                  >
+                    {getLensDisplayName(lens)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {showZoom && (
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-white text-xs w-8 text-right flex-shrink-0">{zoom?.toFixed(1)}x</span>
+              <input
+                type="range"
+                min={zoomMin ?? 1}
+                max={zoomMax ?? 10}
+                step={(zoomMax! - zoomMin!) / 20 || 0.1}
+                value={String(zoom ?? zoomMin ?? 1)}
+                onChange={e => onZoomChange!(parseFloat(e.target.value))}
+                onClick={e => e.stopPropagation()}
+                className="flex-1 h-1.5 bg-white/30 rounded-full appearance-none cursor-pointer accent-blue-500"
+              />
+            </div>
+          )}
         </div>
       )}
-      
-      {/* Video info overlay */}
-      <div className="absolute top-4 left-4 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-xs">
-        {stream.getVideoTracks()[0]?.getSettings().width || 0} × {stream.getVideoTracks()[0]?.getSettings().height || 0}
-      </div>
       
       {/* Recording indicator */}
       <div className="absolute top-4 right-4 flex items-center space-x-2">

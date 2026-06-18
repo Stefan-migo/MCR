@@ -61,30 +61,9 @@ export default function StreamCard({
     return 'bg-red-500';
   };
 
-  const handleOpenPopup = (e: React.MouseEvent) => {
-    try {
-      // Keep dashboard selection behavior
-      onSelect(stream.id);
-    } catch {}
-    // Open clean viewer popup using producerId (most direct consumer path)
-    const width = Math.max(320, stream.resolution?.width || 1280);
-    const height = Math.max(240, stream.resolution?.height || 720);
-    const features = [
-      'popup=yes',
-      'toolbar=no',
-      'menubar=no',
-      'location=no',
-      'status=no',
-      'scrollbars=no',
-      'resizable=yes',
-      `width=${width}`,
-      `height=${height}`,
-    ].join(',');
-    const producerId = (stream as any).producerId;
-    if (producerId) {
-      const url = `/viewer/${producerId}`;
-      window.open(url, `viewer-${producerId}`, features);
-    }
+  const handleCardClick = () => {
+    // ponytail: card click opens modal, popup moves inside the modal
+    onSelect(stream.id);
   };
 
   return (
@@ -92,7 +71,7 @@ export default function StreamCard({
       className={`bg-gray-800 rounded-lg overflow-hidden cursor-pointer transition-all hover:bg-gray-700 ${
         isSelected ? 'ring-2 ring-blue-500' : ''
       } ${!isConnected ? 'opacity-50' : ''} ${className}`}
-      onClick={handleOpenPopup}
+      onClick={handleCardClick}
     >
       {/* Video Preview */}
       <div className="relative aspect-video bg-gray-900">
@@ -130,9 +109,20 @@ export default function StreamCard({
           )}
         </div>
         
-        {/* Duration */}
-        <div className="absolute top-2 right-2 bg-black bg-opacity-70 text-white text-xs px-2 py-1 rounded">
-          {isStreaming ? getStreamingDuration() : formatDuration(stream.connectedAt)}
+        {/* Quality Badge */}
+        <div className="absolute top-2 right-2 flex space-x-1">
+          {(stream as any).quality ? (
+            <div className="bg-blue-600 bg-opacity-80 text-white text-xs px-2 py-1 rounded font-medium">
+              {((stream as any).quality as { label: string }).label}
+            </div>
+          ) : (
+            <div className="bg-gray-700 bg-opacity-80 text-gray-300 text-xs px-2 py-1 rounded font-medium">
+              High
+            </div>
+          )}
+          <div className="bg-black bg-opacity-70 text-white text-xs px-2 py-1 rounded">
+            {isStreaming ? getStreamingDuration() : formatDuration(stream.connectedAt)}
+          </div>
         </div>
         
         {/* Stats Toggle */}
