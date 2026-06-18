@@ -184,6 +184,17 @@ export class MediasoupRouter extends EventEmitter {
         paused: false,
         appData: { clientId: transport.appData?.clientId || 'unknown' }
       });
+
+      // Default to highest quality layer for all consumers (dashboard + bridge).
+      // The user can still switch to lower layers via the quality selector.
+      try {
+        if (consumer.type === 'simulcast' || consumer.type === 'svc') {
+          await consumer.setPreferredLayers({ spatialLayer: 2, temporalLayer: 0 });
+        }
+      } catch (e) {
+        console.warn(`[Router] Failed to set preferred layers for consumer ${consumer.id}:`, e);
+      }
+
       this.consumers.set(consumer.id, consumer);
       return consumer;
     } else {
@@ -208,6 +219,12 @@ export class MediasoupRouter extends EventEmitter {
 
   getConsumer(consumerId: string): mediasoupTypes.Consumer | undefined {
     return this.consumers.get(consumerId);
+  }
+
+  getConsumersByProducerId(producerId: string): mediasoupTypes.Consumer[] {
+    return Array.from(this.consumers.values()).filter(
+      consumer => consumer.producerId === producerId
+    );
   }
 
   async createPlainTransport(options: {

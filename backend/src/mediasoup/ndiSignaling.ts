@@ -144,6 +144,17 @@ export class NdiSignaling {
         });
 
         await consumer.resume();
+
+        // Configure spatial/temporal layers for simulcast/SVC consumers
+        // Start at base layer (0) — not all devices produce 3 layers
+        try {
+          await consumer.setPreferredLayers({ spatialLayer: 0, temporalLayer: 0 });
+          console.log(`[NDI] Consumer layers configured (spatial=0, temporal=0)`);
+        } catch (e: any) {
+          // Non-simulcast/non-SVC consumers (simple) will throw — this is expected
+          console.log(`[NDI] setPreferredLayers skipped (expected for simple consumers):`, e.message);
+        }
+
         session.consumers.set(consumer.id, consumer);
 
         socket.emit('consumer-ready', {

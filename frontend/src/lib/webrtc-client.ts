@@ -32,6 +32,7 @@ export class WebRTCClient {
   public onStreamingStateChange?: (streaming: boolean) => void;
   public onStatsUpdate?: (stats: StreamStats) => void;
   public onError?: (error: Error) => void;
+  public onSetCameraLens?: (data: { lensDeviceId?: string; zoom?: number }) => void;
 
   constructor(config: WebRTCClientConfig) {
     this.config = config;
@@ -76,6 +77,20 @@ export class WebRTCClient {
       const response = await fetch(`${httpUrl}/api/rtp-capabilities`);
       const { rtpCapabilities } = await response.json();
       (window as any).debugLogger?.addLog('success', '✅ RTP capabilities received');
+
+      // Filter codecs for devices with buggy H.264 encoders (e.g., MediaTek Helio G90T)
+      // These devices create H.264 producers but send 0 RTP bytes — black video.
+      // VP8 works universally and avoids this issue.
+      const ua = navigator.userAgent.toLowerCase();
+      const hasBuggyH264 = /helio g90|mt6[89]\d\d|redmi|xiaomi.*mediatek/i.test(ua)
+        || (typeof localStorage !== 'undefined' && localStorage.getItem('mcr_force_vp8') === 'true');
+      if (hasBuggyH264 && rtpCapabilities?.codecs) {
+        const before = rtpCapabilities.codecs.length;
+        rtpCapabilities.codecs = rtpCapabilities.codecs.filter(
+          (c: any) => !c.mimeType?.toLowerCase().includes('h264')
+        );
+        console.log(`[WebRTC] Filtered H.264 (buggy encoder), codecs: ${before} → ${rtpCapabilities.codecs.length}`);
+      }
 
       // Load device with router capabilities
       (window as any).debugLogger?.addLog('info', '📱 Loading mediasoup device...');
@@ -129,17 +144,32 @@ export class WebRTCClient {
       const audioTrack = stream.getAudioTracks()[0];
 
       // Create video producer
+      // Use 3-layer simulcast on supported browsers (Chrome, Firefox, Edge)
+      // for adaptive quality selection on the dashboard. iOS Safari does NOT
+      // support simulcast — multiple encodings result in only layer 0 being
+      // produced. Detect iOS UA and fall back to a single high-bitrate encoding
+      // with maintain-resolution degradation preference.
+      const isIosSafari = /iPhone|iPad|iPod/i.test(navigator.userAgent) &&
+        /Safari/i.test(navigator.userAgent) &&
+        !/Chrome|CriOS|FxiOS|OPiOS|mercury/i.test(navigator.userAgent);
+
       if (videoTrack && this.config.enableVideo) {
         this.videoProducer = await this.sendTransport.produce({
           track: videoTrack,
-          encodings: [
-            { maxBitrate: 1000000, scaleResolutionDownBy: 1 },
-            { maxBitrate: 500000, scaleResolutionDownBy: 2 },
-            { maxBitrate: 200000, scaleResolutionDownBy: 4 }
-          ],
-          codecOptions: {
-            videoGoogleStartBitrate: 1000
-          }
+          encodings: isIosSafari
+            ? [
+                {
+                  maxBitrate: 10000000,
+                  scaleResolutionDownBy: 1,
+                  degradationPreference: 'maintain-resolution'
+                }
+              ]
+            : [
+                { scaleResolutionDownBy: 4, maxBitrate: 200000, degradationPreference: 'maintain-resolution' },
+                { scaleResolutionDownBy: 2, maxBitrate: 500000, degradationPreference: 'maintain-resolution' },
+                { scaleResolutionDownBy: 1, maxBitrate: 4000000, degradationPreference: 'maintain-resolution' },
+              ],
+          codecOptions: {}
         });
 
         this.videoProducer.on('transportclose', () => {
@@ -218,6 +248,18 @@ export class WebRTCClient {
     this.socket.on('error', (error: Error) => {
       (window as any).debugLogger?.addLog('error', '❌ Socket error', error.message);
       this.onError?.(error);
+    });
+
+    this.socket.on('set-camera-lens', (data: { lensDeviceId?: string; zoom?: number }) => {
+      console.log('📷 Remote camera lens command received:', data);
+      this.onSetCameraLens?.(data);
+    });
+
+    // Remote force-VP8 — dashboard operator forces VP8 for buggy H.264 devices
+    this.socket.on('force-vp8', () => {
+      console.log('[WebRTC] Dashboard forced VP8 — reloading with VP8-only');
+      try { localStorage.setItem('mcr_force_vp8', 'true'); } catch {}
+      window.location.reload();
     });
   }
 
@@ -336,6 +378,19 @@ export class WebRTCClient {
         clearInterval(statsInterval);
       }
     }, 2000);
+  }
+
+  /** Emit camera-lens-changed event to the backend (response to remote lens command). */
+  emitCameraLensChanged(data: { deviceId: string; activeLens: string; zoom: number; success: boolean }): void {
+    if (this.socket) {
+      this.socket.emit('camera-lens-changed', data);
+    }
+  }
+
+  /** Replace the video track on the active producer — seamless switch without stream restart. */
+  async replaceVideoTrack(track: MediaStreamTrack): Promise<void> {
+    if (!this.videoProducer) throw new Error('No active video producer');
+    await this.videoProducer.replaceTrack({ track });
   }
 
   // Getters
