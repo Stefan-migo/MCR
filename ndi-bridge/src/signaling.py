@@ -33,8 +33,12 @@ class AsyncSignalingClient:
         )
         self._connected = True
 
-    async def emit_ack(self, event: str, data=None, timeout: float = 10.0) -> dict:
-        """Emit and wait for ack using asyncio."""
+    async def emit_ack(self, event: str, data=None, timeout: float = 15.0) -> dict:
+        """Emit and wait for ack using asyncio.
+        
+        Never passes None as data — Socket.io protocol ambiguity can
+        cause callback misplacement when data is null.
+        """
         if not self._connected:
             return {"error": "disconnected"}
 
@@ -46,7 +50,8 @@ class AsyncSignalingClient:
             result = data
             done.set()
 
-        await self.sio.emit(event, data, callback=_ack)
+        payload = data if data is not None else {}
+        await self.sio.emit(event, payload, callback=_ack)
         try:
             await asyncio.wait_for(done.wait(), timeout=timeout)
         except asyncio.TimeoutError:
