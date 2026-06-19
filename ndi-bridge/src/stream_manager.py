@@ -229,9 +229,10 @@ class AsyncStreamManager:
             state._sender_task = None
         if state.consumer:
             state.consumer.stop()
-        # Do NOT destroy the NDI sender — it survives the stream lifecycle.
-        # Resolume keeps the source visible (no signal) until the stream
-        # reconnects and reuses the same sender.
+        # Send black frame to clear frozen last frame from NDI receivers
+        if state.sender and not state.paused:
+            state.sender.send_black()
+            print(f"[NDI] Sent black frame for {producer_id}")
         print(f"[Manager] Removed stream: {producer_id} (NDI sender kept alive)")
 
     async def on_ndi_control(self, data: dict) -> dict:
