@@ -35,6 +35,8 @@ class AsyncStreamManager:
         # Persistent NDI senders keyed by deviceId — survive stream disconnects
         self._senders: Dict[str, NdiSender] = {}
         self._paused_devices: Set[str] = set()
+        # Devices where user manually disabled NDI — don't auto-recreate on reconnect
+        self._ndi_disabled: Set[str] = set()
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the asyncio event loop for background tasks."""
@@ -155,8 +157,11 @@ class AsyncStreamManager:
         _t.Thread(target=consumer.start_loop, daemon=True).start()
 
         # 8. NDI source — reuse persistent sender or create new one.
-        # Sender survives stream disconnects so Resolume doesn't lose the source.
-        if device_id in self._senders:
+        # If user manually disabled NDI from dashboard, skip entirely.
+        if device_id in self._ndi_disabled:
+            state.paused = True
+            print(f"[NDI] Skipped (user disabled): {source_name}")
+        elif device_id in self._senders:
             state.sender = self._senders[device_id]
             state.paused = device_id in self._paused_devices
             if state.paused:
@@ -277,20 +282,20 @@ class AsyncStreamManager:
             source_name = self._senders[device_id].source_name if device_id in self._senders else ""
             return {"deviceId": device_id, "active": True, "sourceName": source_name}
         else:
-            # Destroy the NDI sender so the source disappears from Resolume/OBS
-            self._paused_devices.add(device_id)
+            # Mark disabled so auto-reconnect doesn't recreate the sender
+            self._ndi_disabled.add(device_id)
+            self._paused_devices.discard(device_id)
             if state:
                 state.paused = True
-            # Destroy persistent sender and remove from tracking
-            if device_id in self._senders:
+                state.sender = None  # detach from stream state
+            # Destroy the NDI sender — source disappears from Resolume/OBS
+            sender = self._senders.pop(device_id, None)
+            if sender:
                 try:
-                    self._senders[device_id].destroy()
-                except Exception:
-                    pass
-                del self._senders[device_id]
-                print(f"[NDI] Destroyed sender for {device_id}")
-            if state and state.sender:
-                state.sender = None
+                    sender.destroy()
+                    print(f"[NDI] Destroyed sender: {device_id}")
+                except Exception as e:
+                    print(f"[NDI] Destroy error for {device_id}: {e}")
             print(f"[NDI] Disabled: {device_id}")
             return {"deviceId": device_id, "active": False, "sourceName": None}
 
@@ -302,3 +307,4 @@ class AsyncStreamManager:
             sender.destroy()
         self._senders.clear()
         self._paused_devices.clear()
+        self._ndi_disabled.clear()
