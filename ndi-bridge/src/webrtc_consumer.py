@@ -14,10 +14,12 @@ import numpy as np
 from .sdp_builder import build_remote_sdp, extract_dtls_fingerprint
 
 # Quiet aiortc logging — no per-packet debug spew.
-# Enable INFO only to see connection state changes.
+# Suppress H264 decoder failures — PyAV 16 compatibility issue on Python 3.14
 logging.basicConfig(level=logging.WARNING, format="[aiortc] %(name)s %(message)s")
 aiortc_logger = logging.getLogger("aiortc")
 aiortc_logger.setLevel(logging.WARNING)
+logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
+logging.getLogger("aiortc.rtcrtpreceiver").setLevel(logging.ERROR)
 
 
 class WebRtcConsumer:
@@ -91,10 +93,16 @@ class WebRtcConsumer:
                 if first_frame:
                     print(f"[WebRTC] Waiting for first frame from track...")
                     first_frame = False
-                frame = await asyncio.wait_for(track.recv(), timeout=10.0)
+                # Longer timeout for first frame (reconnect may be slow)
+                timeout = 30.0 if count == 0 else 10.0
+                frame = await asyncio.wait_for(track.recv(), timeout=timeout)
                 count += 1
 
-                img = frame.to_ndarray(format="bgra")
+                try:
+                    img = frame.to_ndarray(format="bgra")
+                except Exception as e:
+                    print(f"[WebRTC] Frame convert error: {e}")
+                    continue
 
                 if count <= 3 or count % 150 == 0:
                     print(f"[WebRTC] Frame #{count}: {frame.width}x{frame.height}")
@@ -105,12 +113,15 @@ class WebRtcConsumer:
                     "height": frame.height,
                 })
             except asyncio.TimeoutError:
-                print(f"[WebRTC] [WAIT] Still waiting for frames... ({count} received so far)")
+                if count == 0:
+                    print(f"[WebRTC] No first frame after 30s")
+                else:
+                    print(f"[WebRTC] Frame timeout ({count} received)")
             except Exception as e:
                 if self._running:
-                    # Suppress empty errors from dead connections
-                    if str(e):
-                        print(f"[WebRTC] Frame error: {e}")
+                    msg = str(e)
+                    if msg:
+                        print(f"[WebRTC] Frame error: {msg}")
                     await asyncio.sleep(0.1)
 
     def setup_and_get_fingerprint(
