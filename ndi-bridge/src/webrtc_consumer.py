@@ -170,43 +170,40 @@ class WebRtcConsumer:
                 print(f"[WebRTC] Loop error: {e}")
 
     def _patch_jitter_buffer(self):
-        """Balance latency vs stability for WiFi streaming.
+        """Reduce jitter buffer for lowest possible latency.
 
-        aiortc 1.14.0's RTCRtpReceiver defaults to JitterBuffer(capacity=128, prefetch=4).
-        Capacity 16 + prefetch 1 caused frame bursts → pixelation in NDI output.
-        Capacity 64 + prefetch 2 smooths WiFi jitter while keeping sub-100ms latency.
-
-        Also patches the ffmpeg decoder for low-latency decoding.
+        aiortc 1.14.0 default: capacity=128, prefetch=4 (buffers ~133ms at 30fps).
+        We set prefetch=1 (one frame = ~33ms) and capacity=16 for LAN streaming.
         """
         try:
-            # Access receivers via internal __transceivers (aiortc 1.14.0)
             transceivers = self.pc._RTCPeerConnection__transceivers
             for transceiver in transceivers:
                 rtp_receiver = transceiver.receiver
                 jb = rtp_receiver._RTCRtpReceiver__jitter_buffer
                 old_cap = jb.capacity
                 old_prefetch = jb._prefetch
-                jb._capacity = 64
-                jb._prefetch = 2
-                # Clear stale packets for immediate effect
-                jb.remove(64)
-                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→64, prefetch={old_prefetch}→2")
-
-                # Optimize decoder for low latency — auto threads, FAST flag
+                jb._capacity = 16
+                jb._prefetch = 1
+                # Try to clear stale packets (API changed in 1.14.0, may fail)
                 try:
-                    import av
+                    jb.remove(1)  # clear 1 packet
+                except Exception:
+                    pass
+                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→16, prefetch={old_prefetch}→1")
+
+                # Decoder: auto threads + FAST flag for minimum decode latency
+                try:
                     decoder = rtp_receiver._RTCRtpReceiver__decoder
-                    if hasattr(decoder, 'codec') and isinstance(decoder.codec, av.CodecContext):
-                        decoder.codec.threads = 0  # auto — let ffmpeg pick optimal count
-                        decoder.codec.flags2 |= av.codec.context.Flags2.FAST
-                        print(f"[WebRTC] Decoder: threads=0 (auto), flags2=FAST")
-                    else:
-                        print(f"[WebRTC] Decoder patch: codec has type {type(decoder.codec).__name__}")
-                        decoder.codec.threads = 0
+                    if hasattr(decoder, 'codec'):
+                        import av
+                        if isinstance(decoder.codec, av.CodecContext):
+                            decoder.codec.threads = 0
+                            decoder.codec.flags2 |= av.codec.context.Flags2.FAST
+                            print(f"[WebRTC] Decoder: threads=0, FAST")
                 except Exception as de:
-                    print(f"[WebRTC] Decoder patch skipped: {de}")
+                    print(f"[WebRTC] Decoder patch: {de}")
         except Exception as e:
-            print(f"[WebRTC] Jitter buffer patch failed: {e}")
+            print(f"[WebRTC] Jitter buffer patch: {e}")
 
     async def _setup(self, transport_params: dict, consumer_rtp_params: dict | None = None):
         """Set up the WebRTC connection."""

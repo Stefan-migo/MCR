@@ -60,6 +60,16 @@ class AsyncStreamManager:
             print(f"[Manager] No deviceId in stream-started, falling back to producerId")
             device_id = producer_id
 
+        # If there's already a stream for this device, remove it first
+        # Prevents two _frame_sender tasks fighting over the same NDI sender
+        existing = next(
+            (pid for pid, s in self.streams.items() if s.device_id == device_id),
+            None
+        )
+        if existing:
+            print(f"[Manager] Removing stale stream for device {device_id}")
+            self.remove_stream(existing)
+
         if len(self.streams) >= self.max_streams:
             print(f"[Manager] Max streams reached, skipping {producer_id}")
             return
@@ -180,7 +190,7 @@ class AsyncStreamManager:
 
         # 9. Start timer-based frame sender (sends at consistent 30fps)
         loop = asyncio.get_event_loop()
-        interval = 1.0 / 30.0  # send at 30fps
+        interval = 1.0 / 60.0  # send at 60fps polling for lower latency
         state._sender_task = loop.create_task(self._frame_sender(producer_id, interval))
 
     def _on_frame(self, producer_id: str, frame: dict):
@@ -265,7 +275,7 @@ class AsyncStreamManager:
                 # Restart the frame sender if it exited
                 if not state._sender_task or state._sender_task.done():
                     loop = asyncio.get_event_loop()
-                    interval = 1.0 / 30.0
+                    interval = 1.0 / 60.0
                     state._sender_task = loop.create_task(
                         self._frame_sender(state.producer_id, interval)
                     )
