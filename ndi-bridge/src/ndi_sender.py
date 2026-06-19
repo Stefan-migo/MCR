@@ -133,28 +133,24 @@ class NdiSender:
 
         ndi.send_send_video_v2(self._send, video_frame)
 
-    def send_black(self, count: int = 2):
-        """Send black frames to clear the frozen frame from NDI receivers.
+    def send_black(self):
+        """Send a single black frame to clear the frozen frame from NDI receivers.
 
         Uses the locked resolution if available, falls back to 1920x1080.
-        Sends 'count' frames with a short sleep between them so NDI SDK
-        propagates the update before the sender is destroyed or paused.
+        No blocking — single shot, returns immediately.
         """
         if not self._send:
             return
         w = self._fixed_w or 1920
         h = self._fixed_h or 1080
         black = np.zeros((h, w, 4), dtype=np.uint8)
-        black[:, :, 3] = 255  # full alpha
-        for _ in range(count):
-            vf = ndi.VideoFrameV2()
-            vf.data = black
-            vf.FourCC = ndi.FOURCC_VIDEO_TYPE_BGRA
-            vf.xres = w
-            vf.yres = h
-            ndi.send_send_video_v2(self._send, vf)
-            import time
-            time.sleep(0.05)
+        black[:, :, 3] = 255
+        vf = ndi.VideoFrameV2()
+        vf.data = black
+        vf.FourCC = ndi.FOURCC_VIDEO_TYPE_BGRA
+        vf.xres = w
+        vf.yres = h
+        ndi.send_send_video_v2(self._send, vf)
 
     def destroy(self):
         """Clean up the NDI source."""

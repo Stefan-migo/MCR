@@ -223,6 +223,8 @@ class AsyncStreamManager:
         state = self.streams.pop(producer_id, None)
         if not state:
             return
+        # Clear latest frame so frame sender stops sending immediately
+        state._latest_frame = None
         # Cancel the timer-based frame sender
         if state._sender_task:
             state._sender_task.cancel()
@@ -233,7 +235,7 @@ class AsyncStreamManager:
         if state.sender and not state.paused:
             state.sender.send_black()
             print(f"[NDI] Sent black frame for {producer_id}")
-        print(f"[Manager] Removed stream: {producer_id} (NDI sender kept alive)")
+        print(f"[Manager] Removed stream: {producer_id}")
 
     async def on_ndi_control(self, data: dict) -> dict:
         """Handle NDI control event — enable/disable the NDI source.
