@@ -255,6 +255,7 @@ class AsyncStreamManager:
         )
 
         if enabled:
+            self._ndi_disabled.discard(device_id)
             self._paused_devices.discard(device_id)
             if state:
                 state.paused = False
@@ -278,7 +279,15 @@ class AsyncStreamManager:
                         return {"deviceId": device_id, "active": False, "error": str(e)}
                 print(f"[NDI] Resumed: {state.source_name}")
             else:
-                print(f"[NDI] Resume queued for {device_id} (no active stream)")
+                # No active stream — create sender anyway so it's ready when stream connects
+                if device_id not in self._senders:
+                    sender = NdiSender(f"MCR-{device_id[:8]}" if device_id else "MCR-unknown")
+                    try:
+                        sender.initialize()
+                        self._senders[device_id] = sender
+                    except Exception as e:
+                        return {"deviceId": device_id, "active": False, "error": str(e)}
+                print(f"[NDI] Resume queued for {device_id} (sender ready)")
             source_name = self._senders[device_id].source_name if device_id in self._senders else ""
             return {"deviceId": device_id, "active": True, "sourceName": source_name}
         else:
