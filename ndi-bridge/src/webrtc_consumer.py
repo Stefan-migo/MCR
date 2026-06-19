@@ -182,14 +182,14 @@ class WebRtcConsumer:
                 jb = rtp_receiver._RTCRtpReceiver__jitter_buffer
                 old_cap = jb.capacity
                 old_prefetch = jb._prefetch
-                jb._capacity = 16
-                jb._prefetch = 1
+                jb._capacity = 32
+                jb._prefetch = 2
                 # Try to clear stale packets (API changed in 1.14.0, may fail)
                 try:
                     jb.remove(1)  # clear 1 packet
                 except Exception:
                     pass
-                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→16, prefetch={old_prefetch}→1")
+                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→32, prefetch={old_prefetch}→2")
 
                 # Decoder: auto threads + FAST flag for minimum decode latency
                 try:

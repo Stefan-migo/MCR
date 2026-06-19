@@ -65,8 +65,10 @@ def build_remote_sdp(
         subtype = mime.split("/")[1]  # "H264"
         clock = c.get("clockRate", 90000)
         rtpmap_lines.append(f"a=rtpmap:{pt} {subtype}/{clock}")
-        # NOTE: No rtcp-fb nack pli — LAN streaming has near-zero packet loss.
-        # Removing retransmission reduces latency by avoiding NACK/PLI feedback loops.
+        # rtcp-fb for packet retransmission — needed for internet streaming.
+        # Without NACK/PLI, lost packets cause visible pixelation on WiFi/WAN.
+        rtpmap_lines.append(f"a=rtcp-fb:{pt} nack")
+        rtpmap_lines.append(f"a=rtcp-fb:{pt} nack pli")
         fmtp_str = ";".join(f"{k}={v}" for k, v in c.get("parameters", {}).items())
         if fmtp_str:
             fmtp_lines.append(f"a=fmtp:{pt} {fmtp_str}")
