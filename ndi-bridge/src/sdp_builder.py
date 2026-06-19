@@ -105,7 +105,7 @@ def build_remote_sdp(
             print(f"[SDP]   Skipping unsupported: {algo}")
 
     if included_fp == 0:
-        print(f"[SDP] ⚠ NO supported fingerprints! DTLS will fail.")
+        print(f"[SDP] [!!] NO supported fingerprints! DTLS will fail.")
     else:
         print(f"[SDP] Included {included_fp} supported fingerprints")
 

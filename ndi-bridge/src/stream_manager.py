@@ -230,11 +230,10 @@ class AsyncStreamManager:
         print(f"[Manager] Removed stream: {producer_id} (NDI sender kept alive)")
 
     async def on_ndi_control(self, data: dict) -> dict:
-        """Handle NDI control event — pause/resume frame sending.
+        """Handle NDI control event — enable/disable the NDI source.
 
-        NEVER destroys the sender. Toggle pauses frames (source stays visible
-        in Resolume as "no signal"). Toggle ON resumes frames.
-        Sender persists across stream restarts — only destroyed in cleanup_all.
+        Toggle OFF destroys the NDI sender so the source disappears from
+        Resolume/OBS entirely. Toggle ON recreates it.
         """
         device_id = data.get("deviceId")
         producer_id = data.get("producerId")
@@ -254,7 +253,7 @@ class AsyncStreamManager:
             self._paused_devices.discard(device_id)
             if state:
                 state.paused = False
-                # Restart the frame sender if it exited (e.g., after unpause)
+                # Restart the frame sender if it exited
                 if not state._sender_task or state._sender_task.done():
                     loop = asyncio.get_event_loop()
                     interval = 1.0 / 30.0
@@ -278,10 +277,21 @@ class AsyncStreamManager:
             source_name = self._senders[device_id].source_name if device_id in self._senders else ""
             return {"deviceId": device_id, "active": True, "sourceName": source_name}
         else:
+            # Destroy the NDI sender so the source disappears from Resolume/OBS
             self._paused_devices.add(device_id)
             if state:
                 state.paused = True
-            print(f"[NDI] Paused: {device_id}")
+            # Destroy persistent sender and remove from tracking
+            if device_id in self._senders:
+                try:
+                    self._senders[device_id].destroy()
+                except Exception:
+                    pass
+                del self._senders[device_id]
+                print(f"[NDI] Destroyed sender for {device_id}")
+            if state and state.sender:
+                state.sender = None
+            print(f"[NDI] Disabled: {device_id}")
             return {"deviceId": device_id, "active": False, "sourceName": None}
 
     def cleanup_all(self):

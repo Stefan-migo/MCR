@@ -105,7 +105,7 @@ class WebRtcConsumer:
                     "height": frame.height,
                 })
             except asyncio.TimeoutError:
-                print(f"[WebRTC] ⏳ Still waiting for frames... ({count} received so far)")
+                print(f"[WebRTC] [WAIT] Still waiting for frames... ({count} received so far)")
             except Exception as e:
                 if self._running:
                     # Suppress empty errors from dead connections
@@ -220,18 +220,18 @@ class WebRtcConsumer:
             state = self.pc.iceConnectionState
             print(f"[WebRTC] ICE state: {state}")
             if state == "failed":
-                print(f"[WebRTC] ⚠ ICE FAILED — local candidates may not reach server")
+                print(f"[WebRTC] [!!] ICE FAILED — local candidates may not reach server")
 
         @self.pc.on("connectionstatechange")
         def on_conn_state():
             state = self.pc.connectionState
             print(f"[WebRTC] Connection state: {state}")
             if state == "failed":
-                print(f"[WebRTC] ⚠ CONNECTION FAILED — DTLS handshake likely failed")
+                print(f"[WebRTC] [!!] CONNECTION FAILED — DTLS handshake likely failed")
                 print(f"[WebRTC]    Remote fingerprint sent: "
                       f"{transport_params.get('dtlsParameters', {}).get('fingerprints', [{}])[0]}")
             elif state == "connected":
-                print(f"[WebRTC] ✅ CONNECTED — DTLS handshake succeeded!")
+                print(f"[WebRTC] [OK] CONNECTED — DTLS handshake succeeded!")
 
         # Also monitor ICE gathering state
         @self.pc.on("icegatheringstatechange")
