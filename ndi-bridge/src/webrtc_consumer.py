@@ -14,10 +14,12 @@ import numpy as np
 from .sdp_builder import build_remote_sdp, extract_dtls_fingerprint
 
 # Quiet aiortc logging — no per-packet debug spew.
-# Enable INFO only to see connection state changes.
+# Suppress H264 decoder failures — PyAV 16 compatibility issue on Python 3.14
 logging.basicConfig(level=logging.WARNING, format="[aiortc] %(name)s %(message)s")
 aiortc_logger = logging.getLogger("aiortc")
 aiortc_logger.setLevel(logging.WARNING)
+logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
+logging.getLogger("aiortc.rtcrtpreceiver").setLevel(logging.ERROR)
 
 
 class WebRtcConsumer:
@@ -91,10 +93,16 @@ class WebRtcConsumer:
                 if first_frame:
                     print(f"[WebRTC] Waiting for first frame from track...")
                     first_frame = False
-                frame = await asyncio.wait_for(track.recv(), timeout=10.0)
+                # Longer timeout for first frame (reconnect may be slow)
+                timeout = 30.0 if count == 0 else 10.0
+                frame = await asyncio.wait_for(track.recv(), timeout=timeout)
                 count += 1
 
-                img = frame.to_ndarray(format="bgra")
+                try:
+                    img = frame.to_ndarray(format="bgra")
+                except Exception as e:
+                    print(f"[WebRTC] Frame convert error: {e}")
+                    continue
 
                 if count <= 3 or count % 150 == 0:
                     print(f"[WebRTC] Frame #{count}: {frame.width}x{frame.height}")
@@ -105,12 +113,15 @@ class WebRtcConsumer:
                     "height": frame.height,
                 })
             except asyncio.TimeoutError:
-                print(f"[WebRTC] ⏳ Still waiting for frames... ({count} received so far)")
+                if count == 0:
+                    print(f"[WebRTC] No first frame after 30s")
+                else:
+                    print(f"[WebRTC] Frame timeout ({count} received)")
             except Exception as e:
                 if self._running:
-                    # Suppress empty errors from dead connections
-                    if str(e):
-                        print(f"[WebRTC] Frame error: {e}")
+                    msg = str(e)
+                    if msg:
+                        print(f"[WebRTC] Frame error: {msg}")
                     await asyncio.sleep(0.1)
 
     def setup_and_get_fingerprint(
@@ -170,43 +181,40 @@ class WebRtcConsumer:
                 print(f"[WebRTC] Loop error: {e}")
 
     def _patch_jitter_buffer(self):
-        """Balance latency vs stability for WiFi streaming.
+        """Reduce jitter buffer for lowest possible latency.
 
-        aiortc 1.14.0's RTCRtpReceiver defaults to JitterBuffer(capacity=128, prefetch=4).
-        Capacity 16 + prefetch 1 caused frame bursts → pixelation in NDI output.
-        Capacity 64 + prefetch 2 smooths WiFi jitter while keeping sub-100ms latency.
-
-        Also patches the ffmpeg decoder for low-latency decoding.
+        aiortc 1.14.0 default: capacity=128, prefetch=4 (buffers ~133ms at 30fps).
+        We set prefetch=1 (one frame = ~33ms) and capacity=16 for LAN streaming.
         """
         try:
-            # Access receivers via internal __transceivers (aiortc 1.14.0)
             transceivers = self.pc._RTCPeerConnection__transceivers
             for transceiver in transceivers:
                 rtp_receiver = transceiver.receiver
                 jb = rtp_receiver._RTCRtpReceiver__jitter_buffer
                 old_cap = jb.capacity
                 old_prefetch = jb._prefetch
-                jb._capacity = 64
+                jb._capacity = 32
                 jb._prefetch = 2
-                # Clear stale packets for immediate effect
-                jb.remove(64)
-                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→64, prefetch={old_prefetch}→2")
-
-                # Optimize decoder for low latency — auto threads, FAST flag
+                # Try to clear stale packets (API changed in 1.14.0, may fail)
                 try:
-                    import av
+                    jb.remove(1)  # clear 1 packet
+                except Exception:
+                    pass
+                print(f"[WebRTC] Jitter buffer: capacity={old_cap}→32, prefetch={old_prefetch}→2")
+
+                # Decoder: auto threads + FAST flag for minimum decode latency
+                try:
                     decoder = rtp_receiver._RTCRtpReceiver__decoder
-                    if hasattr(decoder, 'codec') and isinstance(decoder.codec, av.CodecContext):
-                        decoder.codec.threads = 0  # auto — let ffmpeg pick optimal count
-                        decoder.codec.flags2 |= av.codec.context.Flags2.FAST
-                        print(f"[WebRTC] Decoder: threads=0 (auto), flags2=FAST")
-                    else:
-                        print(f"[WebRTC] Decoder patch: codec has type {type(decoder.codec).__name__}")
-                        decoder.codec.threads = 0
+                    if hasattr(decoder, 'codec'):
+                        import av
+                        if isinstance(decoder.codec, av.CodecContext):
+                            decoder.codec.threads = 0
+                            decoder.codec.flags2 |= av.codec.context.Flags2.FAST
+                            print(f"[WebRTC] Decoder: threads=0, FAST")
                 except Exception as de:
-                    print(f"[WebRTC] Decoder patch skipped: {de}")
+                    print(f"[WebRTC] Decoder patch: {de}")
         except Exception as e:
-            print(f"[WebRTC] Jitter buffer patch failed: {e}")
+            print(f"[WebRTC] Jitter buffer patch: {e}")
 
     async def _setup(self, transport_params: dict, consumer_rtp_params: dict | None = None):
         """Set up the WebRTC connection."""
@@ -220,18 +228,18 @@ class WebRtcConsumer:
             state = self.pc.iceConnectionState
             print(f"[WebRTC] ICE state: {state}")
             if state == "failed":
-                print(f"[WebRTC] ⚠ ICE FAILED — local candidates may not reach server")
+                print(f"[WebRTC] [!!] ICE FAILED — local candidates may not reach server")
 
         @self.pc.on("connectionstatechange")
         def on_conn_state():
             state = self.pc.connectionState
             print(f"[WebRTC] Connection state: {state}")
             if state == "failed":
-                print(f"[WebRTC] ⚠ CONNECTION FAILED — DTLS handshake likely failed")
+                print(f"[WebRTC] [!!] CONNECTION FAILED — DTLS handshake likely failed")
                 print(f"[WebRTC]    Remote fingerprint sent: "
                       f"{transport_params.get('dtlsParameters', {}).get('fingerprints', [{}])[0]}")
             elif state == "connected":
-                print(f"[WebRTC] ✅ CONNECTED — DTLS handshake succeeded!")
+                print(f"[WebRTC] [OK] CONNECTED — DTLS handshake succeeded!")
 
         # Also monitor ICE gathering state
         @self.pc.on("icegatheringstatechange")

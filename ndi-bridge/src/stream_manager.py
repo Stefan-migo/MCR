@@ -35,6 +35,8 @@ class AsyncStreamManager:
         # Persistent NDI senders keyed by deviceId — survive stream disconnects
         self._senders: Dict[str, NdiSender] = {}
         self._paused_devices: Set[str] = set()
+        # Devices where user manually disabled NDI — don't auto-recreate on reconnect
+        self._ndi_disabled: Set[str] = set()
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the asyncio event loop for background tasks."""
@@ -57,6 +59,16 @@ class AsyncStreamManager:
         if not device_id:
             print(f"[Manager] No deviceId in stream-started, falling back to producerId")
             device_id = producer_id
+
+        # If there's already a stream for this device, remove it first
+        # Prevents two _frame_sender tasks fighting over the same NDI sender
+        existing = next(
+            (pid for pid, s in self.streams.items() if s.device_id == device_id),
+            None
+        )
+        if existing:
+            print(f"[Manager] Removing stale stream for device {device_id}")
+            self.remove_stream(existing)
 
         if len(self.streams) >= self.max_streams:
             print(f"[Manager] Max streams reached, skipping {producer_id}")
@@ -155,8 +167,11 @@ class AsyncStreamManager:
         _t.Thread(target=consumer.start_loop, daemon=True).start()
 
         # 8. NDI source — reuse persistent sender or create new one.
-        # Sender survives stream disconnects so Resolume doesn't lose the source.
-        if device_id in self._senders:
+        # If user manually disabled NDI from dashboard, skip entirely.
+        if device_id in self._ndi_disabled:
+            state.paused = True
+            print(f"[NDI] Skipped (user disabled): {source_name}")
+        elif device_id in self._senders:
             state.sender = self._senders[device_id]
             state.paused = device_id in self._paused_devices
             if state.paused:
@@ -175,7 +190,7 @@ class AsyncStreamManager:
 
         # 9. Start timer-based frame sender (sends at consistent 30fps)
         loop = asyncio.get_event_loop()
-        interval = 1.0 / 30.0  # send at 30fps
+        interval = 1.0 / 60.0  # send at 60fps polling for lower latency
         state._sender_task = loop.create_task(self._frame_sender(producer_id, interval))
 
     def _on_frame(self, producer_id: str, frame: dict):
@@ -218,23 +233,25 @@ class AsyncStreamManager:
         state = self.streams.pop(producer_id, None)
         if not state:
             return
+        # Clear latest frame so frame sender stops sending immediately
+        state._latest_frame = None
         # Cancel the timer-based frame sender
         if state._sender_task:
             state._sender_task.cancel()
             state._sender_task = None
         if state.consumer:
             state.consumer.stop()
-        # Do NOT destroy the NDI sender — it survives the stream lifecycle.
-        # Resolume keeps the source visible (no signal) until the stream
-        # reconnects and reuses the same sender.
-        print(f"[Manager] Removed stream: {producer_id} (NDI sender kept alive)")
+        # Send black frame to clear frozen last frame from NDI receivers
+        if state.sender and not state.paused:
+            state.sender.send_black()
+            print(f"[NDI] Sent black frame for {producer_id}")
+        print(f"[Manager] Removed stream: {producer_id}")
 
     async def on_ndi_control(self, data: dict) -> dict:
-        """Handle NDI control event — pause/resume frame sending.
+        """Handle NDI control event — enable/disable the NDI source.
 
-        NEVER destroys the sender. Toggle pauses frames (source stays visible
-        in Resolume as "no signal"). Toggle ON resumes frames.
-        Sender persists across stream restarts — only destroyed in cleanup_all.
+        Toggle OFF destroys the NDI sender so the source disappears from
+        Resolume/OBS entirely. Toggle ON recreates it.
         """
         device_id = data.get("deviceId")
         producer_id = data.get("producerId")
@@ -251,13 +268,14 @@ class AsyncStreamManager:
         )
 
         if enabled:
+            self._ndi_disabled.discard(device_id)
             self._paused_devices.discard(device_id)
             if state:
                 state.paused = False
-                # Restart the frame sender if it exited (e.g., after unpause)
+                # Restart the frame sender if it exited
                 if not state._sender_task or state._sender_task.done():
                     loop = asyncio.get_event_loop()
-                    interval = 1.0 / 30.0
+                    interval = 1.0 / 60.0
                     state._sender_task = loop.create_task(
                         self._frame_sender(state.producer_id, interval)
                     )
@@ -274,14 +292,33 @@ class AsyncStreamManager:
                         return {"deviceId": device_id, "active": False, "error": str(e)}
                 print(f"[NDI] Resumed: {state.source_name}")
             else:
-                print(f"[NDI] Resume queued for {device_id} (no active stream)")
+                # No active stream — create sender anyway so it's ready when stream connects
+                if device_id not in self._senders:
+                    sender = NdiSender(f"MCR-{device_id[:8]}" if device_id else "MCR-unknown")
+                    try:
+                        sender.initialize()
+                        self._senders[device_id] = sender
+                    except Exception as e:
+                        return {"deviceId": device_id, "active": False, "error": str(e)}
+                print(f"[NDI] Resume queued for {device_id} (sender ready)")
             source_name = self._senders[device_id].source_name if device_id in self._senders else ""
             return {"deviceId": device_id, "active": True, "sourceName": source_name}
         else:
-            self._paused_devices.add(device_id)
+            # Mark disabled so auto-reconnect doesn't recreate the sender
+            self._ndi_disabled.add(device_id)
+            self._paused_devices.discard(device_id)
             if state:
                 state.paused = True
-            print(f"[NDI] Paused: {device_id}")
+                state.sender = None  # detach from stream state
+            # Destroy the NDI sender — source disappears from Resolume/OBS
+            sender = self._senders.pop(device_id, None)
+            if sender:
+                try:
+                    sender.destroy()
+                    print(f"[NDI] Destroyed sender: {device_id}")
+                except Exception as e:
+                    print(f"[NDI] Destroy error for {device_id}: {e}")
+            print(f"[NDI] Disabled: {device_id}")
             return {"deviceId": device_id, "active": False, "sourceName": None}
 
     def cleanup_all(self):
@@ -292,3 +329,4 @@ class AsyncStreamManager:
             sender.destroy()
         self._senders.clear()
         self._paused_devices.clear()
+        self._ndi_disabled.clear()
