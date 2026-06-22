@@ -54,22 +54,25 @@ class NdiSender:
     def initialize(self):
         """Create the NDI source. Must be called before send_frame()."""
         import time
-        send_desc = ndi.SendCreate()
-        send_desc.ndi_name = self.source_name
-        send_desc.clock_video = True
-        send_desc.clock_audio = False
-
-        self._send = ndi.send_create(send_desc)
-        # Retry once: NDI SDK on Windows can transiently fail send_create
-        # after a previous sender was destroyed on the same process.
-        if not self._send:
-            time.sleep(0.2)
+        names_to_try = [
+            self.source_name,
+            f"{self.source_name}-{int(time.time()) % 10000}",
+            f"MCR-{int(time.time()) % 100000}",
+        ]
+        for name in names_to_try:
+            send_desc = ndi.SendCreate()
+            send_desc.ndi_name = name
+            send_desc.clock_video = True
+            send_desc.clock_audio = False
             self._send = ndi.send_create(send_desc)
-
-        if not self._send:
-            raise RuntimeError(f"Failed to create NDI source: {self.source_name}")
-
-        print(f"[NDI] Created source: {self.source_name}")
+            if not self._send:
+                time.sleep(0.2)
+                self._send = ndi.send_create(send_desc)
+            if self._send:
+                self.source_name = name
+                print(f"[NDI] Created source: {self.source_name}")
+                return
+        raise RuntimeError(f"Failed to create NDI source: {self.source_name}")
 
     def send_frame(
         self,
