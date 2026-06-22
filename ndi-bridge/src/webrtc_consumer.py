@@ -104,6 +104,12 @@ class WebRtcConsumer:
                     print(f"[WebRTC] Frame convert error: {e}")
                     continue
 
+                # Validate frame — skip corrupt decoder output (VP8 on Python 3.14)
+                if img.size == 0 or img.shape[0] < 100 or img.shape[1] < 100:
+                    if count <= 5:
+                        print(f"[WebRTC] Skipping corrupt frame: {frame.width}x{frame.height}")
+                    continue
+
                 if count <= 3 or count % 150 == 0:
                     print(f"[WebRTC] Frame #{count}: {frame.width}x{frame.height}")
 
