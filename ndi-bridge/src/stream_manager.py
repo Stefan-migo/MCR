@@ -37,6 +37,8 @@ class AsyncStreamManager:
         self._paused_devices: Set[str] = set()
         # Devices where user manually disabled NDI — don't auto-recreate on reconnect
         self._ndi_disabled: Set[str] = set()
+        # Rate limiting for rapid reconnect cycles
+        self._last_stream_started: Dict[str, float] = {}
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the asyncio event loop for background tasks."""
@@ -59,6 +61,14 @@ class AsyncStreamManager:
         if not device_id:
             print(f"[Manager] No deviceId in stream-started, falling back to producerId")
             device_id = producer_id
+
+        # Rate limit: ignore if same device reconnected within 2 seconds
+        now = time.time()
+        last = self._last_stream_started.get(device_id, 0)
+        if now - last < 2.0:
+            print(f"[Manager] Ignoring rapid reconnect for {device_id}")
+            return
+        self._last_stream_started[device_id] = now
 
         # If there's already a stream for this device, remove it first
         # Prevents two _frame_sender tasks fighting over the same NDI sender

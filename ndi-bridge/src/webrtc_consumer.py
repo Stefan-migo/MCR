@@ -329,11 +329,23 @@ class WebRtcConsumer:
 
     async def _close(self):
         if self.pc:
-            await self.pc.close()
+            try:
+                await self.pc.close()
+            except Exception:
+                pass
+            self.pc = None
 
     def stop(self):
         self._running = False
-        if self._loop:
+        if self._loop and self.pc:
+            # Close the PeerConnection before stopping the loop
+            import asyncio as _asyncio
+            _asyncio.run_coroutine_threadsafe(self._close(), self._loop)
+            _asyncio.run_coroutine_threadsafe(
+                _asyncio.sleep(0.5), self._loop
+            ).result(timeout=2)
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        elif self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread:
             self._thread.join(timeout=3)
