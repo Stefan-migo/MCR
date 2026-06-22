@@ -46,7 +46,7 @@ jest.mock('../../lib/camera-service', () => ({
 }));
 
 // We need to import the store AFTER the mock is set up
-import { useStreamStore } from '../stream-store';
+import { useStreamStore, getDefaultQualityPreset } from '../stream-store';
 
 const mockLenses: LensInfo[] = [
   { deviceId: 'cam-wide', label: 'Back Camera', groupId: 'g1', facingMode: 'environment', zoomMin: 1, zoomMax: 6, zoomStep: 0.1, lensType: 'wide' },
@@ -184,5 +184,33 @@ describe('StreamStore — lens state', () => {
       expect(mockEnumerateLenses).toHaveBeenCalled();
       expect(useStreamStore.getState().lenses).toEqual(mockLenses);
     });
+  });
+});
+
+// ─── Task 1.6: Default quality preset by platform ──────────────────────
+
+describe('getDefaultQualityPreset', () => {
+  // QUALITY_PRESETS values (mirror CameraService — can't import mock's inner values)
+  const presets = [
+    { name: 'Low', width: 640, height: 480, frameRate: 15, bitrate: 200000 },
+    { name: 'Medium', width: 1280, height: 720, frameRate: 24, bitrate: 500000 },
+    { name: 'High', width: 1920, height: 1080, frameRate: 30, bitrate: 1000000 },
+    { name: 'Ultra', width: 3840, height: 2160, frameRate: 30, bitrate: 2000000 },
+  ] as const;
+
+  it('returns Medium (720p) for mobile devices', () => {
+    const preset = getDefaultQualityPreset(true, presets as any);
+    expect(preset.name).toBe('Medium');
+    expect(preset.width).toBe(1280);
+    expect(preset.height).toBe(720);
+    expect(preset.frameRate).toBe(24);
+  });
+
+  it('returns High (1080p) for desktop devices', () => {
+    const preset = getDefaultQualityPreset(false, presets as any);
+    expect(preset.name).toBe('High');
+    expect(preset.width).toBe(1920);
+    expect(preset.height).toBe(1080);
+    expect(preset.frameRate).toBe(30);
   });
 });

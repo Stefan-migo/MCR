@@ -680,7 +680,7 @@ export class CameraService {
       return {
         width: 1280,
         height: 720,
-        frameRate: 30,
+        frameRate: 24,
         facingMode: 'environment'
       };
     } else {

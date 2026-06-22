@@ -11,9 +11,6 @@ RUN npm install
 # Copy source code
 COPY . .
 
-# Copy SSL certificates
-COPY key.pem cert.pem ./
-
 # Build arguments for environment variables
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_WS_URL

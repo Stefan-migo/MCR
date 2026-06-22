@@ -37,9 +37,7 @@ export default function CameraPreview({
   const filteredLenses = getFilteredLenses(lenses);
   const showLensPicker = filteredLenses.length > 1 && onSelectLens;
   const showZoom = zoomSupported && zoomMin !== null && zoomMax !== null && onZoomChange;
-  // Only mirror for front camera (selfie) — back camera should be natural view
   const activeLens = lenses.find(l => l.deviceId === selectedLensDeviceId);
-  const isFrontCamera = activeLens?.facingMode === 'user';
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -75,9 +73,6 @@ export default function CameraPreview({
         className={`w-full h-full object-cover ${
           isFullscreen ? 'cursor-pointer' : ''
         }`}
-        style={{
-          transform: isFrontCamera ? 'scaleX(-1)' : undefined,
-        }}
       />
 
       {/* Bottom overlay — camera controls inside the video frame */}

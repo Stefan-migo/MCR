@@ -340,3 +340,49 @@ describe('CameraService.setZoom', () => {
     await expect(service.setZoom(999)).resolves.toBeUndefined();
   });
 });
+
+// ─── Task 1.7: getOptimalConstraints mobile defaults ───────────────────
+
+describe('CameraService.getOptimalConstraints', () => {
+  afterEach(() => {
+    // Restore desktop UA if we changed it
+    delete (global.navigator as any).userAgent;
+  });
+
+  it('returns 720p@24fps for mobile device UAs', () => {
+    (global.navigator as any).userAgent =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36';
+    const constraints = CameraService.getOptimalConstraints();
+    expect(constraints.width).toBe(1280);
+    expect(constraints.height).toBe(720);
+    expect(constraints.frameRate).toBe(24);
+    expect(constraints.facingMode).toBe('environment');
+  });
+
+  it('returns 720p@24fps for iOS Safari UAs', () => {
+    (global.navigator as any).userAgent =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1';
+    const constraints = CameraService.getOptimalConstraints();
+    expect(constraints.width).toBe(1280);
+    expect(constraints.height).toBe(720);
+    expect(constraints.frameRate).toBe(24);
+  });
+
+  it('returns 1080p@30fps for desktop UAs', () => {
+    (global.navigator as any).userAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    const constraints = CameraService.getOptimalConstraints();
+    expect(constraints.width).toBe(1920);
+    expect(constraints.height).toBe(1080);
+    expect(constraints.frameRate).toBe(30);
+    expect(constraints.facingMode).toBe('user');
+  });
+
+  it('returns 1080p@30fps when no userAgent matches mobile', () => {
+    // When navigator.userAgent is undefined, isMobileDevice returns false
+    (global.navigator as any).userAgent = undefined;
+    const constraints = CameraService.getOptimalConstraints();
+    expect(constraints.frameRate).toBe(30);
+    expect(constraints.width).toBe(1920);
+  });
+});

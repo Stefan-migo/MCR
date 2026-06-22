@@ -76,7 +76,7 @@ export default function StreamCard({
       {/* Video Preview */}
       <div className="relative aspect-video bg-gray-900">
         {stream.producerId ? (
-          <StreamPreview producerId={stream.producerId} mirrored={true} />
+          <StreamPreview producerId={stream.producerId} mirrored={false} />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center text-gray-500">

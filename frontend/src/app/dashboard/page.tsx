@@ -334,7 +334,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {modalStreamId && (
+      {modalStreamId && modalStreamData && (
         <StreamModal
           stream={modalStreamData}
           isOpen={true}
@@ -343,7 +343,7 @@ export default function DashboardPage() {
           onRename={handleStreamRename}
           onNdiToggle={handleNdiToggle}
           ndiState={modalNdiState}
-          cameraState={modalCameraState}
+          cameraState={modalCameraState ?? undefined}
           onCameraLensSelect={handleCameraLensSelect}
           onCameraZoomChange={handleCameraZoomChange}
           onForceVp8={handleForceVp8}

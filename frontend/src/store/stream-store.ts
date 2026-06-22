@@ -3,6 +3,14 @@ import { WebRTCClient, WebRTCClientConfig, StreamStats } from '../lib/webrtc-cli
 import { getBackendWsUrl } from '../lib/url';
 import { CameraService, CameraConstraints, CameraQualityPreset, LensInfo } from '../lib/camera-service';
 
+/** Platform-aware default quality preset selector. Pure function, testable. */
+export function getDefaultQualityPreset(
+  isMobile: boolean,
+  presets: CameraQualityPreset[]
+): CameraQualityPreset {
+  return isMobile ? presets[1] : presets[2]; // Medium (720p) for mobile, High (1080p) for desktop
+}
+
 export interface StreamState {
   // Connection state
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -68,7 +76,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   currentStream: null,
   streamStats: null,
   cameraConstraints: null,
-  selectedQualityPreset: CameraService.QUALITY_PRESETS[2], // High quality by default (1080p@30fps)
+  selectedQualityPreset: (() => {
+    const isMobile = typeof navigator !== 'undefined' && CameraService.isMobileDevice();
+    return getDefaultQualityPreset(isMobile, CameraService.QUALITY_PRESETS);
+  })(),
   lenses: [],
   selectedLensDeviceId: null,
   zoom: null,

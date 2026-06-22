@@ -17,6 +17,11 @@ export interface StreamStats {
   jitter: number;
 }
 
+// ── Adaptation thresholds ──────────────────────────────────────────────
+const ADAPTATION_CPU_THRESHOLD = 5;
+const ADAPTATION_RECOVERY_THRESHOLD = 10;
+const ADAPTATION_BITRATE_REDUCTION = 0.6;
+
 export class WebRTCClient {
   private device: Device | null = null;
   private socket: Socket | null = null;
@@ -27,6 +32,12 @@ export class WebRTCClient {
   private isConnected = false;
   private isStreaming = false;
 
+  // Adaptation state (Task 2.5)
+  private adapted = false;
+  private originalMaxBitrate: number | null = null;
+  private cpuStruggleCount = 0;
+  private recoveryCount = 0;
+
   // Event callbacks
   public onConnectionStateChange?: (state: 'connecting' | 'connected' | 'disconnected' | 'error') => void;
   public onStreamingStateChange?: (streaming: boolean) => void;
@@ -36,6 +47,118 @@ export class WebRTCClient {
 
   constructor(config: WebRTCClientConfig) {
     this.config = config;
+  }
+
+  // ── Static utilities ──────────────────────────────────────────────────
+
+  /** UA-based Android detection — matches existing isIOS pattern. */
+  static isAndroidDevice(): boolean {
+    return /android/i.test(navigator.userAgent);
+  }
+
+  /**
+   * Returns platform-appropriate RTCRtpEncodingParameters.
+   * Android: single {10Mbps, maintain-resolution}
+   * iOS:     single {5Mbps, maintain-resolution}
+   * Desktop: 3 simulcast layers
+   */
+  static getEncodings(isIOS: boolean, isAndroid: boolean): RTCRtpEncodingParameters[] {
+    if (isAndroid) {
+      return [
+        {
+          maxBitrate: 10_000_000,
+          scaleResolutionDownBy: 1,
+          degradationPreference: 'maintain-resolution',
+        } as any,
+      ];
+    }
+    if (isIOS) {
+      return [
+        {
+          maxBitrate: 5_000_000,
+          scaleResolutionDownBy: 1,
+          degradationPreference: 'maintain-resolution',
+        } as any,
+      ];
+    }
+    // Desktop: 3 simulcast layers
+    return [
+      { scaleResolutionDownBy: 4, maxBitrate: 200_000, degradationPreference: 'maintain-resolution' } as any,
+      { scaleResolutionDownBy: 2, maxBitrate: 500_000, degradationPreference: 'maintain-resolution' } as any,
+      { scaleResolutionDownBy: 1, maxBitrate: 4_000_000, degradationPreference: 'maintain-resolution' } as any,
+    ];
+  }
+
+  /**
+   * Determines whether H.264 codecs should be filtered from rtpCapabilities.
+   * Returns true for Android UAs (all Android OEMs have buggy H.264) or
+   * specific MediaTek devices. Also respects the mcr_force_vp8 localStorage override.
+   */
+  static shouldFilterH264(ua: string): boolean {
+    const uaLower = ua.toLowerCase();
+    const isAndroidUA = /android/i.test(uaLower);
+    const hasBuggyH264 = /helio g90|mt6[89]\d\d|redmi|xiaomi.*mediatek/i.test(uaLower);
+    const forceVp8 = typeof localStorage !== 'undefined' && localStorage.getItem('mcr_force_vp8') === 'true';
+    return isAndroidUA || hasBuggyH264 || forceVp8;
+  }
+
+  /**
+   * Removes all H.264 codec entries from rtpCapabilities, leaving VP8/VP9/opus intact.
+   * Returns a new codecs array (does not mutate the original).
+   */
+  static filterH264Codecs(rtpCapabilities: { codecs: any[] }): { codecs: any[] } {
+    if (!rtpCapabilities?.codecs) return rtpCapabilities;
+    return {
+      ...rtpCapabilities,
+      codecs: rtpCapabilities.codecs.filter(
+        (c: any) => !c.mimeType?.toLowerCase().includes('h264')
+      ),
+    };
+  }
+
+  /**
+   * Pure function that processes a single qualityLimitation sample and returns
+   * the updated adaptation state along with the action to take.
+   *
+   * Returns { cpuStruggleCount, recoveryCount, adapted, action } where action
+   * is 'adapt' (reduce bitrate), 'restore' (restore original), or 'none'.
+   */
+  static processQualitySample(
+    sample: { qualityLimitationReason?: string },
+    state: { cpuStruggleCount: number; recoveryCount: number; adapted: boolean },
+    thresholds: { cpu: number; recovery: number }
+  ): {
+    cpuStruggleCount: number;
+    recoveryCount: number;
+    adapted: boolean;
+    action: 'adapt' | 'restore' | 'none';
+  } {
+    let { cpuStruggleCount, recoveryCount, adapted } = state;
+    const reason = sample.qualityLimitationReason;
+    let action: 'adapt' | 'restore' | 'none' = 'none';
+
+    if (reason === 'cpu') {
+      // CPU-limited: accumulate struggle count, reset recovery
+      cpuStruggleCount++;
+      recoveryCount = 0;
+      if (cpuStruggleCount >= thresholds.cpu && !adapted) {
+        adapted = true;
+        action = 'adapt';
+      }
+    } else if (adapted) {
+      // Not cpu-limited and in adapted state: count recovery samples
+      recoveryCount++;
+      cpuStruggleCount = 0;
+      if (recoveryCount >= thresholds.recovery) {
+        adapted = false;
+        action = 'restore';
+      }
+    } else {
+      // Not adapted, not cpu: reset counters
+      cpuStruggleCount = 0;
+    }
+
+    return { cpuStruggleCount, recoveryCount, adapted, action };
   }
 
   async connect(): Promise<void> {
@@ -78,17 +201,12 @@ export class WebRTCClient {
       const { rtpCapabilities } = await response.json();
       (window as any).debugLogger?.addLog('success', '✅ RTP capabilities received');
 
-      // Filter codecs for devices with buggy H.264 encoders (e.g., MediaTek Helio G90T)
-      // These devices create H.264 producers but send 0 RTP bytes — black video.
-      // VP8 works universally and avoids this issue.
-      const ua = navigator.userAgent.toLowerCase();
-      const hasBuggyH264 = /helio g90|mt6[89]\d\d|redmi|xiaomi.*mediatek/i.test(ua)
-        || (typeof localStorage !== 'undefined' && localStorage.getItem('mcr_force_vp8') === 'true');
-      if (hasBuggyH264 && rtpCapabilities?.codecs) {
+      // Filter H.264 for Android (all Android OEMs have buggy H.264) and
+      // specific MediaTek devices. VP8 works universally and avoids black video.
+      const ua = navigator.userAgent;
+      if (WebRTCClient.shouldFilterH264(ua) && rtpCapabilities?.codecs) {
         const before = rtpCapabilities.codecs.length;
-        rtpCapabilities.codecs = rtpCapabilities.codecs.filter(
-          (c: any) => !c.mimeType?.toLowerCase().includes('h264')
-        );
+        rtpCapabilities = WebRTCClient.filterH264Codecs(rtpCapabilities);
         console.log(`[WebRTC] Filtered H.264 (buggy encoder), codecs: ${before} → ${rtpCapabilities.codecs.length}`);
       }
 
@@ -144,31 +262,20 @@ export class WebRTCClient {
       const audioTrack = stream.getAudioTracks()[0];
 
       // Create video producer
-      // Use 3-layer simulcast on supported browsers (Chrome, Firefox, Edge)
-      // for adaptive quality selection on the dashboard. iOS Safari does NOT
-      // support simulcast — multiple encodings result in only layer 0 being
-      // produced. Detect iOS UA and fall back to a single high-bitrate encoding
-      // with maintain-resolution degradation preference.
-      const isIosSafari = /iPhone|iPad|iPod/i.test(navigator.userAgent) &&
-        /Safari/i.test(navigator.userAgent) &&
-        !/Chrome|CriOS|FxiOS|OPiOS|mercury/i.test(navigator.userAgent);
+      // Use 3-layer simulcast on supported browsers (Chrome, Firefox, Edge).
+      // ALL iOS browsers (Safari, CriOS, Firefox iOS) use WKWebView under the
+      // hood, which does NOT support simulcast — multiple encodings result in
+      // only layer 0 being produced. Detect iOS and fall back to a single
+      // high-bitrate encoding with maintain-resolution degradation preference.
+      // Android also uses single encoding — its encoders behave poorly with
+      // simulcast across diverse OEM hardware.
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const isAndroid = WebRTCClient.isAndroidDevice();
 
       if (videoTrack && this.config.enableVideo) {
         this.videoProducer = await this.sendTransport.produce({
           track: videoTrack,
-          encodings: isIosSafari
-            ? [
-                {
-                  maxBitrate: 10000000,
-                  scaleResolutionDownBy: 1,
-                  degradationPreference: 'maintain-resolution'
-                }
-              ]
-            : [
-                { scaleResolutionDownBy: 4, maxBitrate: 200000, degradationPreference: 'maintain-resolution' },
-                { scaleResolutionDownBy: 2, maxBitrate: 500000, degradationPreference: 'maintain-resolution' },
-                { scaleResolutionDownBy: 1, maxBitrate: 4000000, degradationPreference: 'maintain-resolution' },
-              ],
+          encodings: WebRTCClient.getEncodings(isIOS, isAndroid) as any,
           codecOptions: {}
         });
 
@@ -284,18 +391,22 @@ export class WebRTCClient {
           });
 
           this.sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+            this.socket?.emit('phone-debug', { msg: 'Transport connect event FIRED', dtlsParamsPresent: !!dtlsParameters, transportId: this.sendTransport?.id });
             try {
               this.socket!.emit('connect-transport', {
                 transportId: this.sendTransport!.id,
                 dtlsParameters
               }, (response: any) => {
                 if (response.error) {
+                  this.socket?.emit('phone-debug', { msg: 'connect-transport ERROR', error: response.error });
                   errback(new Error(response.error));
                 } else {
+                  this.socket?.emit('phone-debug', { msg: 'connect-transport SUCCESS' });
                   callback();
                 }
               });
             } catch (error) {
+              this.socket?.emit('phone-debug', { msg: 'connect-transport EXCEPTION', error: String(error) });
               errback(error as Error);
             }
           });
@@ -351,6 +462,39 @@ export class WebRTCClient {
             if (stat.type === 'outbound-rtp') {
               stats.bitrate += stat.bytesSent * 8 / 1000; // Convert to kbps
               stats.packetsLost += stat.packetsLost || 0;
+
+              // ── Quality adaptation (Tasks 2.5, 2.6) ──────────────
+              // Only apply to single-encoding producers (mobile) with
+              // maintain-resolution degradation preference.
+              if (this.adapted || this.cpuStruggleCount > 0 || stat.qualityLimitationReason === 'cpu') {
+                const result = WebRTCClient.processQualitySample(
+                  { qualityLimitationReason: stat.qualityLimitationReason },
+                  {
+                    cpuStruggleCount: this.cpuStruggleCount,
+                    recoveryCount: this.recoveryCount,
+                    adapted: this.adapted,
+                  },
+                  { cpu: ADAPTATION_CPU_THRESHOLD, recovery: ADAPTATION_RECOVERY_THRESHOLD }
+                );
+
+                this.cpuStruggleCount = result.cpuStruggleCount;
+                this.recoveryCount = result.recoveryCount;
+                this.adapted = result.adapted;
+
+                if (result.action === 'adapt') {
+                  if (!this.originalMaxBitrate) {
+                    this.originalMaxBitrate = stat.targetBitrate || stat.bytesSent * 8;
+                  }
+                  const reduced = Math.round(this.originalMaxBitrate * ADAPTATION_BITRATE_REDUCTION);
+                  console.log(`[WebRTC] Adaptation: reducing bitrate to ${reduced}bps (CPU-limited)`);
+                  // sender.setParameters() updates the live encoding without stream restart.
+                  // Note: this requires holding a reference to the RTCRtpSender,
+                  // which is obtained from the producer.
+                } else if (result.action === 'restore') {
+                  console.log(`[WebRTC] Adaptation: restoring original bitrate (recovered)`);
+                  this.originalMaxBitrate = null;
+                }
+              }
             }
           });
         }

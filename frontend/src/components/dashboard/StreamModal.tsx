@@ -114,7 +114,7 @@ export default function StreamModal({
 
         {/* Video Preview */}
         <div className="aspect-video bg-gray-900">
-          <StreamPreview producerId={stream.producerId} mirrored={true} />
+          <StreamPreview producerId={stream.producerId} mirrored={false} />
         </div>
 
         {/* Stream Controls (reuse existing) */}

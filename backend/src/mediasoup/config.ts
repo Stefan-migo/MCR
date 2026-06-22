@@ -44,7 +44,7 @@ export interface PlainTransportConfig {
 export const mediasoupConfig = {
   worker: {
     rtcMinPort: 20000,
-    rtcMaxPort: 21000,
+    rtcMaxPort: 20100,
     logLevel: 'warn' as const,
     logTags: [
       'info',
@@ -74,8 +74,8 @@ export const mediasoupConfig = {
           useinbandfec: 1
         }
       },
-      // H.264 first — hardware encoding on most devices = lowest latency.
-      // Profile 42e01f (baseline) is universally supported for WebRTC.
+      // H264 first — hardware encoding on iOS/iPhone, lowest latency.
+      // WKWebView (used by CriOS/Chrome on iOS) handles H264 natively.
       {
         kind: 'video' as const,
         mimeType: 'video/h264',
@@ -92,7 +92,7 @@ export const mediasoupConfig = {
           { type: 'ccm', parameter: 'fir' }
         ]
       },
-      // H.264 High Profile 4.1 (640c1f) — enables iOS hardware encoder negotiation
+      // H.264 High Profile — iOS hardware encoder
       {
         kind: 'video' as const,
         mimeType: 'video/h264',
@@ -109,9 +109,7 @@ export const mediasoupConfig = {
           { type: 'ccm', parameter: 'fir' }
         ]
       },
-      // VP8 fallback — some chipsets (MediaTek Helio G90T / Redmi Note 8 Pro)
-      // have a buggy H.264 hardware encoder that creates producers but
-      // sends 0 bytes. If H.264 doesn't work, browser falls back to VP8.
+      // VP8 fallback — for devices where H264 doesn't work
       {
         kind: 'video' as const,
         mimeType: 'video/VP8',
@@ -125,12 +123,13 @@ export const mediasoupConfig = {
           { type: 'ccm', parameter: 'fir' }
         ]
       },
+      // VP9 — higher efficiency for capable devices
       {
         kind: 'video' as const,
         mimeType: 'video/VP9',
         clockRate: 90000,
         parameters: {
-          'profile-id': 2,
+          'profile-id': 0,
           'x-google-start-bitrate': 1000
         }
       }
@@ -142,17 +141,13 @@ export const mediasoupConfig = {
       {
         ip: '0.0.0.0',
         announcedIp: getAnnouncedIp()
-      },
-      {
-        ip: '::',
-        announcedIp: process.env.ANNOUNCED_IP || process.env.MEDIASOUP_ANNOUNCED_IP || undefined
       }
     ],
     enableUdp: true,
     enableTcp: true,
     preferUdp: true,
     maxIncomingBitrate: 10000000,
-    initialAvailableOutgoingBitrate: 1000000
+    initialAvailableOutgoingBitrate: 5000000
   },
 
   plainTransport: {

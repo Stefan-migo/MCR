@@ -25,13 +25,21 @@ export interface StreamInfo {
   };
 }
 
+export interface PlainTransportInfo {
+  transport: mediasoupTypes.PlainTransport;
+  streamId: string;
+  producerId: string;
+  createdAt: Date;
+}
+
 export class MediasoupRouter extends EventEmitter {
   private worker: mediasoupTypes.Worker | null = null;
   private router: mediasoupTypes.Router | null = null;
   public transports: Map<string, mediasoupTypes.WebRtcTransport | mediasoupTypes.PlainTransport> = new Map();
   private producers: Map<string, mediasoupTypes.Producer> = new Map();
-  private consumers: Map<string, mediasoupTypes.Consumer> = new Map();
+  public consumers: Map<string, mediasoupTypes.Consumer> = new Map();
   private streamMetadata: Map<string, StreamInfo> = new Map();
+  private plainTransports: Map<string, PlainTransportInfo> = new Map();
 
   async initialize(): Promise<void> {
     try {
@@ -59,6 +67,16 @@ export class MediasoupRouter extends EventEmitter {
     const transport = await this.router.createWebRtcTransport({
       ...mediasoupConfig.webRtcTransport,
       appData: { clientId: `client-${Date.now()}` }
+    });
+
+    transport.on('icestatechange', (state: string) => {
+      console.log(`[ICE ${transport.id}] state: ${state}`);
+    });
+    transport.on('dtlsstatechange', (state: string) => {
+      console.log(`[DTLS ${transport.id}] state: ${state}`);
+    });
+    transport.on('iceselectedtuplechange', (tuple: any) => {
+      if (tuple) console.log(`[ICE ${transport.id}] selected tuple: ${tuple.localIp}:${tuple.localPort} <-> ${tuple.remoteIp}:${tuple.remotePort}`);
     });
 
     this.transports.set(transport.id, transport);
@@ -231,7 +249,7 @@ export class MediasoupRouter extends EventEmitter {
     listenIp: { ip: string; announcedIp?: string };
     rtcpMux?: boolean;
     comedia?: boolean;
-  }): Promise<mediasoupTypes.PlainTransport> {
+  }, streamId?: string, producerId?: string): Promise<mediasoupTypes.PlainTransport> {
     if (!this.router) throw new Error('Router not initialized');
     
     const transport = await this.router.createPlainTransport({
@@ -241,7 +259,36 @@ export class MediasoupRouter extends EventEmitter {
     });
     
     this.transports.set(transport.id, transport);
+    
+    if (streamId && producerId) {
+      this.plainTransports.set(transport.id, {
+        transport,
+        streamId,
+        producerId,
+        createdAt: new Date(),
+      });
+    }
+    
     return transport;
+  }
+
+  getPlainTransports(): PlainTransportInfo[] {
+    return Array.from(this.plainTransports.values());
+  }
+
+  async closePlainTransportForProducer(producerId: string): Promise<boolean> {
+    for (const [id, info] of this.plainTransports) {
+      if (info.producerId === producerId) {
+        try { info.transport.close(); } catch {}
+        this.plainTransports.delete(id);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  removeConsumer(consumerId: string): boolean {
+    return this.consumers.delete(consumerId);
   }
 
   // Stream management methods

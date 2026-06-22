@@ -70,6 +70,19 @@ The router `mediaCodecs` MUST include a second H.264 video codec entry with `pro
 | Happy path — backward compat | A desktop browser that only supports Constrained Baseline connects | The device's SDP offer only lists Baseline (`42e01f`) | Mediasoup matches the Baseline codec entry — no regression, stream works as before |
 | Edge — codec selection order | Both entries match the device's capabilities | The SDP negotiation process matches codecs in order | Baseline (first entry) is preferred unless the client explicitly requests High Profile |
 
+#### R-SEC-003: Android VP8 codec negotiation
+
+Android devices MUST filter out H.264 codec entries from `rtpCapabilities` during producer setup, forcing VP8 negotiation. The filter SHOULD apply to all Android devices (UA match `/android/i`), extending the existing `hasBuggyH264` pattern in `webrtc-client.ts`.
+
+- VP8 MUST remain in capabilities — only H.264 entries are removed.
+- Non-Android devices MUST be unaffected — H.264 remains available for iOS and desktop.
+
+| Scenario | GIVEN | WHEN | THEN |
+|---|---|---|---|
+| Happy — Android forces VP8 | Android device with H.264+VP8 caps | `rtpCapabilities` is filtered | H.264 entries removed; only VP8 remains; stream uses VP8 |
+| Edge — desktop preserved | Desktop Chrome connects | `rtpCapabilities` is processed | H.264 entries kept; normal H.264 negotiation occurs |
+| Edge — iOS preserved | iOS Safari connects | `rtpCapabilities` is processed | H.264 entries kept; High Profile can be negotiated |
+
 ### Acceptance Criteria
 
 - [ ] Producer bitrate reaches 2–4 Mbps under normal lighting (no artificial cap at 1.5 Mbps)
@@ -87,20 +100,20 @@ New users currently default to Medium quality (720p@24fps, 500kbps). Changing th
 
 ### Requirements
 
-#### R-CD-001: Default quality preset
+#### R-CD-001: Default quality preset by platform
 
-The default value of `selectedQualityPreset` in `useStreamStore` MUST be `CameraService.QUALITY_PRESETS[2]` (High preset) instead of `QUALITY_PRESETS[1]` (Medium preset).
+The default `selectedQualityPreset` MUST be `QUALITY_PRESETS[1]` (Medium — 1280×720 @24fps, 500kbps) on mobile devices (Android/iOS by UA) and `QUALITY_PRESETS[2]` (High — 1920×1080 @30fps, 1Mbps) on desktop/laptop.
+(Previously: Default was always High regardless of platform)
 
-- The High preset resolution MUST be 1920×1080 @30fps with a bitrate target of 1,000,000 bps.
-- The user MUST still be able to change quality presets (Medium, Ultra, etc.) via the existing `changeQuality` action.
-- If user preferences are persisted in a future iteration, this default only applies on first launch — existing preferences SHOULD override.
+- The user MUST still be able to change quality via the existing `changeQuality` action.
+- Presets only apply on first launch; persisted preferences SHOULD override.
 
 | Scenario | GIVEN | WHEN | THEN |
 |---|---|---|---|
-| Happy path — fresh start | A new user opens the camera page | The store initializes and `startStreaming` is called | `getUserMedia` requests 1920×1080 @30fps; the stream is HD quality |
-| Edge — device cannot support 1080p | The device's rear camera maxes out at 720p | `getUserMedia` is called with the High preset constraints | The browser's `getUserMedia` falls back to the nearest supported resolution (typically 1280×720) — no error |
-| Edge — user downgrades | After streaming starts, the user selects Medium quality | `changeQuality(QUALITY_PRESETS[1])` is called | The stream restarts at Medium quality; the store updates `selectedQualityPreset` to Medium |
-| Edge — user upgrades to Ultra | After streaming starts, the user selects Ultra quality | `changeQuality(QUALITY_PRESETS[3])` is called | The stream restarts at Ultra quality per existing behavior |
+| Happy — mobile start | Android phone opens the camera page | Store initializes; `startStreaming` called | `getUserMedia` requests 1280×720 @24fps (Medium) |
+| Happy — desktop start | Desktop browser opens the camera page | Store initializes; `startStreaming` called | `getUserMedia` requests 1920×1080 @30fps (High) |
+| Edge — low-end mobile | Device max resolution is 480p | Medium preset constraints applied | Browser falls back to nearest supported resolution |
+| Edge — user upgrades on mobile | Mobile stream active; user selects High | `changeQuality(PRESETS[2])` called | Stream restarts at 1080p@30fps |
 
 ### Acceptance Criteria
 
@@ -159,21 +172,21 @@ The iPhone producer currently uses a single adaptive-bitrate encoding that bounc
 
 #### R-SQC-001: Producer simulcast encodings [sdp-exchange]
 
-The iPhone producer (`webrtc-client.ts`) MUST publish 3 simulcast encoding layers when the device supports it:
+The producer MUST publish 3 simulcast encoding layers when the device supports it. Android devices (UA match `/android/i`) MUST use a single encoding with `degradationPreference: 'maintain-resolution'` and `maxBitrate: 10,000,000` instead of 3-layer simulcast. iOS Safari MUST also use the single-encoding fallback when simulcast is unsupported.
+(Previously: Only iOS had the single-encoding fallback; Android had no special handling)
 
 | Layer | spatialLayer | scaleResolutionDownBy | maxBitrate | UI Label |
-|-------|-------------|----------------------|------------|----------|
+|---|---|---|---|---|
 | 0 | 0 | 4.0 | 200 Kbps | Low |
 | 1 | 1 | 2.0 | 500 Kbps | Medium |
 | 2 | 2 | 1.0 | 4 Mbps | High |
 
-If iOS Safari does not support simulcast (only spatial layer 0 is active), the system MUST fall back to a single encoding with `degradationPreference: 'maintain-resolution'` and `maxBitrate: 10000000`.
-
 | Scenario | GIVEN | WHEN | THEN |
 |---|---|---|---|
-| Happy — iPhone producer | An iOS device starts streaming | `sendTransport.produce()` is called with 3 encodings | Mediasoup receives all 3 simulcast layers |
-| Edge — iOS no simulcast | iOS Safari only activates layer 0 | Producer detects incomplete simulcast | Falls back to single encoding, `degradationPreference: 'maintain-resolution'` |
-| Edge — desktop browser | Chrome/Firefox starts a stream | 3 encodings are published | All 3 layers work normally — no regression |
+| Happy — Android producer | Android device; UA matches `/android/i` | `sendTransport.produce()` called | Single encoding with maintain-resolution published |
+| Happy — iPhone producer | iOS device starts streaming | 3 encodings published | Mediasoup receives all 3 simulcast layers |
+| Edge — iOS no simulcast | iOS Safari only activates layer 0 | Producer detects incomplete simulcast | Falls back to single maintain-resolution encoding |
+| Edge — desktop browser | Chrome/Firefox starts a stream | 3 encodings published | All 3 layers work normally — no regression |
 
 #### R-SQC-002: Server set-stream-quality event
 
@@ -403,6 +416,30 @@ The bridge MUST continue auto-creating NDI senders when a `stream-started` event
 | `deviceId` not present in `stream-started` payload | Low | Fallback to `producerId[:8]` preserves backward compatibility |
 | Dashboard sends `set-ndi-control` before bridge is ready | Low | Bridge processes events after connection; best-effort queuing |
 | Custom ndiName conflicts with existing NDI source name on the network | Low | NDI SDK appends ` (2)` suffix automatically — no crash |
+
+---
+
+## 8. mobile-adaptive-quality — Stats-Based Adaptive Quality
+
+### Purpose
+
+Mobile producers using single encoding with `maintain-resolution` need a feedback loop that detects encoder CPU struggle and reduces internal encoding parameters (bitrate, QP) to stabilize framerate without changing output resolution. This protects NDI output quality during transient congestion or thermal throttling.
+
+### Requirements
+
+#### R-ADAPT-001: Stats-based adaptive quality
+
+When `producer.getStats()` shows sustained encoder struggle (framerate drop for 5+ consecutive 2s samples), the system SHOULD reduce internal encoding parameters (bitrate, QP) to stabilize framerate. Output resolution MUST remain constant — only internal parameters adjust, not spatial layers or encoding structure.
+
+- Original parameters SHOULD restore after 10+ consecutive normal samples.
+- This applies primarily to single-encoding mobile producers using `maintain-resolution`.
+
+| Scenario | GIVEN | WHEN | THEN |
+|---|---|---|---|
+| Happy — struggle recovery | Android producer framerate drops 24→12fps for 5 samples | Adaptive controller triggers reduction | Internal bitrate reduced; framerate stabilizes at 24fps; resolution unchanged |
+| Edge — NDI stability | Encoding degrades during congestion | NDI consumer observes stream | NDI output resolution unchanged (720p); only bitrate/framerate changed |
+| Edge — self-recovery | Stats normal for 10+ consecutive samples after adaptation | Controller detects sustained recovery | Original encoding parameters restored; quality returns to preset level |
+| Edge — never triggered | Producer maintains stable framerate | Stats samples show no struggle | No adaptation occurs; no encoding parameter changes |
 
 ---
 

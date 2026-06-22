@@ -1,4 +1,4 @@
-FROM node:18-slim
+FROM node:22-slim
 
 # Install system dependencies for building mediasoup
 RUN apt-get update && apt-get install -y \
@@ -20,9 +20,6 @@ RUN npm install
 
 # Copy source code
 COPY . .
-
-# Copy SSL certificates
-COPY key.pem cert.pem ./
 
 # Build TypeScript
 RUN npm run build

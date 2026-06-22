@@ -220,11 +220,17 @@ function findDeviceSocketId(deviceId: string): string | undefined {
 }
 
 // Bridge socket tracking for NDI control routing
-let bridgeSocketId: string | null = null;
+// Supports multiple bridges (e.g. Docker + Windows) simultaneously
+const bridgeSocketIds: Set<string> = new Set();
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('📡 Client connected:', socket.id);
+
+  // Phone debug logging
+  socket.on('phone-debug', (data) => {
+    console.log(`📱[${socket.id}] Phone debug:`, JSON.stringify(data));
+  });
 
   // WebRTC signaling events
   socket.on('register-device', (data: { deviceId: string; deviceName?: string }, callback?: (resp: any) => void) => {
@@ -284,6 +290,8 @@ io.on('connection', (socket) => {
       if (deviceEntry) {
         (transport as any).appData = { ...(transport as any).appData, clientId: deviceEntry.deviceId };
       }
+      console.log(`[Transport] Created ${data.direction} transport ${transport.id}`);
+      console.log(`[Transport] ICE candidates: ${JSON.stringify(transport.iceCandidates.map(c => ({ip: c.ip, port: c.port, type: c.type, protocol: c.protocol})))}`);
       callback({
         id: transport.id,
         iceParameters: transport.iceParameters,
@@ -507,18 +515,7 @@ io.on('connection', (socket) => {
         return;
       }
       await consumer.resume();
-
-      // If simulcast, configure spatial/temporal layers so RTP flows.
-      // Always start at base layer (0) — not all devices produce 3 layers.
-      const ctype = (consumer as any).type;
-      if (ctype === 'simulcast' || ctype === 'svc') {
-        try {
-          await consumer.setPreferredLayers({ spatialLayer: 0, temporalLayer: 0 });
-          console.log(`[Bridge] Simulcast layers configured (spatial=0, temporal=0)`);
-        } catch (e: any) {
-          console.log(`[Bridge] setPreferredLayers error:`, e.message);
-        }
-      }
+      console.log(`[Bridge] Consumer resumed (already unpaused, no quality change)`);
 
       safeCallback(callback, { success: true }, 'resume');
 
@@ -609,8 +606,17 @@ io.on('connection', (socket) => {
 
   // NDI bridge registration (bridge identifies itself)
   socket.on('register-bridge', () => {
-    bridgeSocketId = socket.id;
-    console.log('NDI bridge registered:', socket.id);
+    bridgeSocketIds.add(socket.id);
+    console.log('NDI bridge registered:', socket.id, `(total: ${bridgeSocketIds.size})`);
+    // Replay existing streams so this bridge picks up where it left off
+    const activeStreams = mediasoupRouter.getActiveStreams();
+    for (const stream of activeStreams) {
+      socket.emit('stream-started', {
+        producerId: stream.producerId,
+        stream: { ...stream },
+      });
+      console.log(`[Bridge] Replayed stream: ${stream.deviceId}`);
+    }
   });
 
   // NDI control — dashboard requests NDI sender create/destroy
@@ -630,19 +636,22 @@ io.on('connection', (socket) => {
         return;
       }
 
-      if (!bridgeSocketId) {
-        callback?.({ error: 'NDI bridge not connected' });
+      if (bridgeSocketIds.size === 0) {
+        callback?.({ error: 'No NDI bridges connected' });
         return;
       }
 
       const sourceName = ndiName || `MCR-${deviceId.slice(0, 8)}`;
 
-      io.to(bridgeSocketId).emit('ndi-control', {
-        deviceId,
-        producerId: stream.producerId,
-        enabled,
-        sourceName,
-      });
+      // Send to ALL connected bridges — each bridge handles independently
+      for (const sid of bridgeSocketIds) {
+        io.to(sid).emit('ndi-control', {
+          deviceId,
+          producerId: stream.producerId,
+          enabled,
+          sourceName,
+        });
+      }
 
       callback?.({ success: true });
     } catch (error) {
@@ -705,10 +714,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
 
-    // Clear bridge tracking if the bridge disconnects
-    if (socket.id === bridgeSocketId) {
-      bridgeSocketId = null;
-      console.log('❌ NDI bridge disconnected');
+    // Remove from bridge tracking if a bridge disconnects
+    if (bridgeSocketIds.delete(socket.id)) {
+      console.log(`❌ NDI bridge disconnected (${bridgeSocketIds.size} remaining)`);
     }
 
     // Cleanup recv transports/consumers
